@@ -1,0 +1,59 @@
+sudo apt install postgresql postgresql-contrib
+
+2. Start PostgreSQL Service
+In environments without systemd, you can start PostgreSQL using the service command or directly:
+bash# Using service command
+sudo service postgresql start
+
+# Alternatively, start PostgreSQL directly
+sudo /etc/init.d/postgresql start
+
+# Switch to postgres user
+sudo -i -u postgres
+
+# Access PostgreSQL command line
+psql
+
+-- Create a database for your project
+CREATE DATABASE energy_data_sources;
+
+-- Create a user for your application
+CREATE USER ryszardcetnarski WITH PASSWORD 'EY2025';
+
+-- Grant necessary privileges
+GRANT ALL PRIVILEGES ON DATABASE energy_data_sources TO ryszardcetnarski;
+
+
+
+-- Connect to your database
+\c energy_data_sources
+
+CREATE SCHEMA airflow_data;
+GRANT ALL PRIVILEGES ON SCHEMA airflow_data TO ryszardcetnarski;
+GRANT ALL PRIVILEGES ON SCHEMA public TO ryszardcetnarski;
+
+
+
+-- Create table with XML support
+CREATE TABLE raw_entsoe_xml (
+    id SERIAL PRIMARY KEY,
+    xml_data XML NOT NULL,
+    request_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    request_parameters JSONB,
+    status_code INTEGER,
+    content_type TEXT
+);
+
+
+GRANT ALL PRIVILEGES ON TABLE raw_entsoe_xml TO ryszardcetnarski;
+GRANT USAGE, SELECT ON SEQUENCE raw_entsoe_xml_id_seq TO ryszardcetnarski;
+
+-- Exit PostgreSQL command line
+\q
+
+
+SHOW listen_addresses;
+SHOW port;
+
+
+exit
