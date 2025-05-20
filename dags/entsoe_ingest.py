@@ -14,7 +14,13 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.empty import EmptyOperator # Not used in final version, but good to know
 from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago # Alternative for start_date
-from .airflow.entsoe_dag_config import ENTSOE_VARIABLES
+
+import sys
+import os
+
+# Add the project root directory to sys.path so imports work from dags/
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 # Best practice: Store API keys in Airflow Connections or a secrets backend
 ENTSOE_API_KEY = '43a243bd-0370-40c2-9b15-ccbf61c103b1' # Replace with Airflow Variable or Connection
@@ -24,12 +30,11 @@ POSTGRES_CONN_ID = "postgres_default"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing" # Changed name for clarity
 PRODUCTION_TABLE_NAME = "entsoe_day_ahead_prices_prod" # Changed name for clarity
 
-
 COUNTRY_MAPPING = {
-    "PL": {"name": "Poland", "domain": "10YPL-AREA-----S"},
-    "DE": {"name": "Germany", "domain": "10Y1001A1001A83F"},
+    "PL": {"name": "Poland", "country_domain": ["10YPL-AREA-----S"], "bidding_zones" : ["10YPL-AREA-----S"]},
+    "DE": {"name": "Germany", "country_domain": ["10Y1001A1001A83F"], "bidding_zones": ["10YDE-VE-------2", "10YDE-EON------1", "10Y1001C--00002H", "10YDE-ENBW-----N"]},
     #"LT": {"name": "Lithuania", "domain": "10YLT-1001A0008Q"},
-    "CZ": {"name": "Czech Republic", "domain": "10YCZ-CEPS-----N"},
+    #"CZ": {"name": "Czech Republic", "country_domain": ["10YCZ-CEPS-----N"], "bidding_zones" : ["10YCZ-CEPS-----N"]},
     #"SK": {"name": "Slovakia", "domain": "10YSK-SEPS-----K"},
     #"SE": {"name": "Sweden", "domain": "10YSE-1--------K"},
     #"FR": {"name": "France", "domain": "10YFR-RTE------C"},
@@ -83,23 +88,45 @@ def entsoe_dynamic_etl_pipeline():
     def generate_run_parameters(**context)-> List[Dict[str, str]]:
 
         # data_interval_start is timezone-aware if the DAG start_date is.
+        debugpy.listen(("0.0.0.0", 8509))  # Replace port if needed
+        debugpy.wait_for_client()
+        debugpy.breakpoint()
+        
+
         data_interval_start = context['data_interval_start']
         data_interval_end = context['data_interval_end']
 
         intervals= generate_date_intervals(data_interval_start, data_interval_end, interval_days=1)
 
+        from entsoe_dag_config import ENTSOE_VARIABLES 
+
+
         task_params = []
-        for i in intervals:
-            pstart = i["periodStart"]
-            pend = i["periodEnd"]
-            for country_code, country_details in COUNTRY_MAPPING.items():
-                task_params.append({
-                    "periodStart": pstart,
-                    "periodEnd": pend,
-                    "country_code": country_code,
-                    "country_domain": country_details["domain"],
-                    "country_name": country_details["name"]
-                })
+        for var_name, entsoe_params_dict in ENTSOE_VARIABLES.items():
+            for inter in intervals:
+                pstart = inter["periodStart"]
+                pend = inter["periodEnd"]
+                for country_code, country_details in COUNTRY_MAPPING.items():
+                    for zone in country_details[entsoe_params_dict["AreaType"]]:
+                        task_params.append(
+                            {
+                            "entsoe_api_params":
+                                {
+                                "periodStart": pstart,
+                                "periodEnd": pend,
+                                "in_Domain": zone,
+                                **entsoe_params_dict["params"]
+                                },
+                            
+                            "task_run_metadata" : 
+                                {       
+                                "var_name" : var_name,            
+                                "country_code": country_code,
+                                "country_name": country_details["name"],
+                                }
+                            },
+                        )
+
         logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
         return task_params
     
@@ -109,39 +136,39 @@ def entsoe_dynamic_etl_pipeline():
         Fetches data from the ENTSOE API for a given country and period.
         api_params is expected to be a dict with 'periodStart', 'periodEnd', 'country_code'.
         """
-        
+        entsoe_api_params = task_param["entsoe_api_params"]
+        task_run_metadata = task_param["task_run_metadata"]
+
         api_kwargs = {}
-        if var_name == "Energy Prices":
-            api_kwargs["out_Domain"] =  task_param["in_Domain"]
+        if task_run_metadata["var_name"] == "Energy Prices":
+            api_kwargs["out_Domain"] =  entsoe_api_params["in_Domain"]
 
         api_request_params = {
             "securityToken": ENTSOE_API_KEY,
-            "documentType": "A44",
-            "in_Domain": task_param["country_domain"],
-            "periodStart": task_param["periodStart"],
-            "periodEnd": task_param["periodEnd"],
+            **entsoe_api_params,
         }
         
         final_params = dict(api_request_params, **api_kwargs)
         try:
-            logger.info(f"Fetching data for {task_param['country_name']} ({task_param['country_code']}) for period: {task_param['periodStart']}-{task_param['periodEnd']}")
+            log_str = f"Fetching data for {task_run_metadata['var_name']} {task_run_metadata['country_name']} ({entsoe_api_params['in_Domain']}) for period: {entsoe_api_params['periodStart']}-{entsoe_api_params['periodEnd']}"
+            logger.info(f"Fetching data for {log_str}")
             response = requests.get(API_BASE_URL, params=final_params, timeout=60)
             response.raise_for_status()
-            logger.info(f"Successfully extracted data for {task_param['country_name']}")
+            logger.info(f"Successfully extracted data for  {log_str}")
             return {
                 'xml_content': response.text,
                 'status_code': response.status_code,
                 'content_type': response.headers.get('Content-Type'),
                 'request_params': json.dumps(api_request_params),
                 'logical_date_processed': context['logical_date'].isoformat(), # or data_interval_start
-                'country_name': task_param['country_name'],
-                'country_code': task_param['country_code']
+                'country_name': task_run_metadata['country_name'],
+                'country_code': task_run_metadata['country_code']
             }
         except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error for {task_param['country_name']}: {http_err} - Response: {response.text}")
-            raise AirflowException(f"API request failed for {task_param['country_name']} with status {response.status_code}: {response.text}")
+            logger.error(f"HTTP error for {log_str}: {http_err} - Response: {response.text}")
+            raise AirflowException(f"API request failed for {log_str} with status {response.status_code}: {response.text}")
         except Exception as e:
-            logger.error(f"Error extracting data for {task_param['country_name']}: {str(e)}")
+            logger.error(f"Error extracting data for {log_str}: {str(e)}")
             raise
 
 
@@ -190,11 +217,7 @@ def entsoe_dynamic_etl_pipeline():
         except ET.ParseError as e:
             logger.error(f"XML ParseError for {country_name}: {e}. XML snippet: {xml_data[:200]}")
             return pd.DataFrame(columns=empty_df_cols)
-        # Zadebuguj tutaj bo coś zwraca f"No valid records found in XML for
-        # debugpy.listen(("0.0.0.0", 8509))  # Replace port if needed
-        # debugpy.wait_for_client()
-        # debugpy.breakpoint()
-        
+
         records = []
         for ts in root.findall('ns:TimeSeries', ns):
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
@@ -217,12 +240,15 @@ def entsoe_dynamic_etl_pipeline():
                         })
                     except ValueError:
                          logger.warning(f"Skipping point for {country_name} due to invalid number format: pos={position_text}, price={price_text}")
+                         raise
                 else:
                     logger.warning(f"Skipping point for {country_name} due to missing data in point: ts_id={ts_id}")
+                    raise
         
         if not records:
             logger.info(f"No valid records found in XML for {country_name} from request: {extracted_data.get('request_params')}")
-            return pd.DataFrame(columns=empty_df_cols)
+            #return pd.DataFrame(columns=empty_df_cols)
+            raise
 
         df = pd.DataFrame(records)
         df['country_name'] = country_name
