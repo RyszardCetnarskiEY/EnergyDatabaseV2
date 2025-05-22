@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from io import StringIO
 import debugpy
 
+
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.empty import EmptyOperator # Not used in final version, but good to know
@@ -29,17 +30,22 @@ API_BASE_URL = "https://web-api.tp.entsoe.eu/api"
 POSTGRES_CONN_ID = "postgres_default"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing" # Changed name for clarity
 PRODUCTION_TABLE_NAME = "entsoe_day_ahead_prices_prod" # Changed name for clarity
-
+# samo DE: "10Y1001A1001A83F"
+# DE-LU: "10Y1001A1001A82H"
+# Wyrzucona jedna strefa DE "10Y1001C--00002H"
+#https://www.entsoe.eu/data/energy-identification-codes-eic/eic-area-codes-map/
+# To działa: "10YDE-VE-------2"
 COUNTRY_MAPPING = {
     "PL": {"name": "Poland", "country_domain": ["10YPL-AREA-----S"], "bidding_zones" : ["10YPL-AREA-----S"]},
-    "DE": {"name": "Germany", "country_domain": ["10Y1001A1001A83F"], "bidding_zones": ["10YDE-VE-------2", "10YDE-EON------1", "10Y1001C--00002H", "10YDE-ENBW-----N"]},
+    #"DE": {"name": "Germany", "country_domain": ["10Y1001A1001A82H"], "bidding_zones": ["10YDE-VE-------2", "10YDE-EON------1", "10YDE-ENBW-----N"]},
+    "DE": {"name": "Germany", "country_domain": ["10Y1001A1001A82H"], "bidding_zones": ["10YDE-VE-------2", "10YDE-EON------1", "10YDE-ENBW-----N", "10YDE-RWENET---I"]},
     #"LT": {"name": "Lithuania", "domain": "10YLT-1001A0008Q"},
     #"CZ": {"name": "Czech Republic", "country_domain": ["10YCZ-CEPS-----N"], "bidding_zones" : ["10YCZ-CEPS-----N"]},
     #"SK": {"name": "Slovakia", "domain": "10YSK-SEPS-----K"},
     #"SE": {"name": "Sweden", "domain": "10YSE-1--------K"},
     #"FR": {"name": "France", "domain": "10YFR-RTE------C"},
 }
-HISTORICAL_START_DATE = datetime(2025, 5, 14, tz="UTC")
+HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
 
 logger = logging.getLogger(__name__)
 
@@ -51,25 +57,6 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
-
-def generate_date_intervals(start_date, end_date, interval_days=1):
-    """Generates (periodStart, periodEnd) tuples for the API."""
-    intervals = []
-    current_start = start_date
-    while current_start < end_date:
-        current_end = current_start + timedelta(days=interval_days)
-
-        if current_end > end_date:
-            current_end = end_date
-        intervals.append({
-            "periodStart": current_start.strftime('%Y%m%d%H%M'),
-            "periodEnd": current_end.strftime('%Y%m%d%H%M')
-        })
-        current_start = current_end
-        if current_start == end_date and interval_days == 1 and start_date.strftime('%Y%m%d') == end_date.strftime('%Y%m%d'): # Ensure single day still runs
-             break
-    return intervals
-
 
 @dag(
     dag_id='entsoe_dynamic_etl_pipeline_final',
@@ -87,45 +74,33 @@ def entsoe_dynamic_etl_pipeline():
     @task
     def generate_run_parameters(**context)-> List[Dict[str, str]]:
 
-        # data_interval_start is timezone-aware if the DAG start_date is.
-        debugpy.listen(("0.0.0.0", 8509))  # Replace port if needed
-        debugpy.wait_for_client()
-        debugpy.breakpoint()
-        
-
         data_interval_start = context['data_interval_start']
         data_interval_end = context['data_interval_end']
-
-        intervals= generate_date_intervals(data_interval_start, data_interval_end, interval_days=1)
-
         from entsoe_dag_config import ENTSOE_VARIABLES 
-
-
         task_params = []
         for var_name, entsoe_params_dict in ENTSOE_VARIABLES.items():
-            for inter in intervals:
-                pstart = inter["periodStart"]
-                pend = inter["periodEnd"]
-                for country_code, country_details in COUNTRY_MAPPING.items():
-                    for zone in country_details[entsoe_params_dict["AreaType"]]:
-                        task_params.append(
+
+            for country_code, country_details in COUNTRY_MAPPING.items():
+                for zone in country_details[entsoe_params_dict["AreaType"]]:
+                    task_params.append(
+                        {
+                        "entsoe_api_params":
                             {
-                            "entsoe_api_params":
-                                {
-                                "periodStart": pstart,
-                                "periodEnd": pend,
-                                "in_Domain": zone,
-                                **entsoe_params_dict["params"]
-                                },
-                            
-                            "task_run_metadata" : 
-                                {       
-                                "var_name" : var_name,            
-                                "country_code": country_code,
-                                "country_name": country_details["name"],
-                                }
+                            "periodStart": data_interval_start.strftime('%Y%m%d%H%M'),
+                            "periodEnd": data_interval_end.strftime('%Y%m%d%H%M'),
+                            "in_Domain": zone,
+                            **entsoe_params_dict["params"]
                             },
-                        )
+                        
+                        "task_run_metadata" : 
+                            {       
+                            "var_name" : var_name, 
+                            "config_dict" : entsoe_params_dict,
+                            "country_code": country_code,
+                            "country_name": country_details["name"],
+                            }
+                        },
+                    )
 
         logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
         return task_params
@@ -162,7 +137,9 @@ def entsoe_dynamic_etl_pipeline():
                 'request_params': json.dumps(api_request_params),
                 'logical_date_processed': context['logical_date'].isoformat(), # or data_interval_start
                 'country_name': task_run_metadata['country_name'],
-                'country_code': task_run_metadata['country_code']
+                'country_code': task_run_metadata['country_code'],
+                'task_run_metadata': task_run_metadata
+
             }
         except requests.exceptions.HTTPError as http_err:
             logger.error(f"HTTP error for {log_str}: {http_err} - Response: {response.text}")
@@ -202,56 +179,102 @@ def entsoe_dynamic_etl_pipeline():
             logger.error(f"Error storing raw XML for {extracted_data.get('country_name')}: {e}")
             raise
 
-    @task
+    @task(task_id='parse_xml')
     def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
-        empty_df_cols = ['TimeSeries_ID', 'Currency', 'Unit', 'Period_Start', 'Period_End', 'Resolution', 'Position', 'Price', 'country_name']
-        if not extracted_data or 'xml_content' not in extracted_data:
-            logger.warning(f"Skipping XML parsing due to missing content for country: {extracted_data.get('country_name')}")
-            return pd.DataFrame(columns=empty_df_cols)
+        # data_interval_start is timezone-aware if the DAG start_date is.
+        debugpy.listen(("0.0.0.0", 8509))  # Replace port if needed
+        debugpy.wait_for_client()
 
         xml_data = extracted_data['xml_content']
         country_name = extracted_data['country_name']
-        ns = {'ns': 'urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3'}
+        var_name = extracted_data['task_run_metadata']['var_name']
+        column_name = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['column_name']
+        var_resolution = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['resolution']
+        request_params_str = extracted_data['request_params']
+
         try:
             root = ET.fromstring(xml_data)
         except ET.ParseError as e:
-            logger.error(f"XML ParseError for {country_name}: {e}. XML snippet: {xml_data[:200]}")
-            return pd.DataFrame(columns=empty_df_cols)
+            raise ValueError(f"Invalid XML format: {e}")
 
-        records = []
+        # Pretty-print the XML
+        import xml.dom.minidom
+        dom = xml.dom.minidom.parseString(xml_data)
+        pretty_xml = dom.toprettyxml(indent="  ")
+        print(pretty_xml)
+
+        # Determine namespace
+        ns = {'ns': root.tag[root.tag.find("{")+1:root.tag.find("}")]} if "{" in root.tag else {}
+        #ns = {'ns': 'urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3'}
+        print('ns: ', ns)
+        # Prepare a dictionary to collect all series
+        series_dict = {}
+        max_pos = 0
+
+        results_name_dict = {}
         for ts in root.findall('ns:TimeSeries', ns):
-            ts_id = ts.findtext('ns:mRID', namespaces=ns)
-            currency = ts.findtext('ns:currency_Unit.name', namespaces=ns)
-            unit = ts.findtext('ns:price_Measure_Unit.name', namespaces=ns)
+            # Determine column name
+            name = ts.findtext(column_name, namespaces=ns)
+            if not name:
+                raise ValueError(f"no data in xml for: {column_name}")
+            name = name.strip()
+
+            # Get the period and resolution (optional to use)
+            #TODO - remove api key from request params string, best pass period start and end explicitly as dict, not a str resulting from json serialization - if possible in context od airflow Xcom
             period = ts.find('ns:Period', ns)
-            if period is None: continue
+            if period is None:
+                logger.error(f"No  data for {var_name} {country_name} {request_params_str}")
+                continue
+            #.// is for recursive search. Remeber, if putting more nested objects each  needs to begin with a namespace "ns:"
+            resolution = period.findtext('.//ns:resolution', namespaces=ns)
+            if resolution != var_resolution: #TODO, co jeżeli wcześniejszy okres będzie miał resolution PT60M a potem się zmieni, zrób kod odporny na taki warunek
+                logger.error(f"No {var_resolution} resolution data for {var_name} {country_name} {request_params_str}")
+                continue
+
+            timeInterval = period.findall('ns:timeInterval', ns)
             start = period.findtext('ns:timeInterval/ns:start', namespaces=ns)
             end = period.findtext('ns:timeInterval/ns:end', namespaces=ns)
-            resolution = period.findtext('ns:resolution', namespaces=ns)
-            for point in period.findall('ns:Point', ns):
-                position_text = point.findtext('ns:position', namespaces=ns)
-                price_text = point.findtext('ns:price.amount', namespaces=ns)
-                if all(v is not None for v in [ts_id, currency, unit, start, end, resolution, position_text, price_text]):
-                    try:
-                        records.append({
-                            'TimeSeries_ID': ts_id, 'Currency': currency, 'Unit': unit,
-                            'Period_Start': start, 'Period_End': end, 'Resolution': resolution,
-                            'Position': int(position_text), 'Price': float(price_text)
-                        })
-                    except ValueError:
-                         logger.warning(f"Skipping point for {country_name} due to invalid number format: pos={position_text}, price={price_text}")
-                         raise
-                else:
-                    logger.warning(f"Skipping point for {country_name} due to missing data in point: ts_id={ts_id}")
-                    raise
-        
-        if not records:
-            logger.info(f"No valid records found in XML for {country_name} from request: {extracted_data.get('request_params')}")
-            #return pd.DataFrame(columns=empty_df_cols)
-            raise
 
-        df = pd.DataFrame(records)
-        df['country_name'] = country_name
+            # Extract all <Point> values
+            data = {}
+            for point in period.findall('ns:Point', ns):
+                pos = point.findtext('ns:position', namespaces=ns)
+                qty = point.findtext('ns:quantity', namespaces=ns) or point.findtext('ns:price.amount', namespaces=ns) # TODO Also pass this in the xml parsing params like name
+                if pos is not None and qty is not None:
+                    try:
+                        pos = int(pos)
+                        qty = float(qty)
+                        data[pos] = qty
+                        max_pos = max(max_pos, pos)
+                    except ValueError:
+                        continue  # Skip malformed points
+            
+            if column_name == 'ns:mRID': 
+                value_label = var_name
+            else: 
+                value_label = name
+
+            if value_label not in results_name_dict:
+                results_name_dict[value_label] = pd.DataFrame(columns=[value_label, "Period_Start", "Period_End"])
+            
+            partial_df = pd.DataFrame.from_dict(data, orient='index', columns=[value_label])
+            #TODO: if constructing a multicolumn dataframe, there is no need to store period start and period end for each column. They will be exactly the same. Either drop duplicates or remove altogether
+            partial_df.loc[:, "Period_Start"] = start
+            partial_df.loc[:, "Period_End"] = end
+            results_name_dict[value_label] = pd.concat([results_name_dict[value_label], partial_df])
+
+        if not results_name_dict:
+            raise ValueError("No valid TimeSeries data found in XML.")
+
+        df = pd.concat(results_name_dict, axis=1).T.drop_duplicates().T
+        df.columns = df.columns.droplevel()
+        #df.index.name = "position"
+        #df = df.sort_index()
+        # Optional: add metadata if needed
+
+        df.loc[:,"country_name"] = country_name
+        print(df)
+        debugpy.breakpoint()
         return df
 
 

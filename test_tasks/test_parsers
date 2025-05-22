@@ -1,0 +1,50 @@
+from datetime import timedelta
+from pendulum import datetime
+import json
+import logging
+import requests
+import pandas as pd
+from typing import Dict, Any, List
+import xml.etree.ElementTree as ET
+from io import StringIO
+import debugpy
+
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from EnergyDatabase.dags.entsoe_ingest import entsoe_dynamic_etl_pipeline.parse_xml
+
+
+HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
+
+# Add the project root directory to sys.path so imports work from dags/
+
+POSTGRES_CONN_ID = "postgres_default"
+RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing" # Changed name for clarity
+
+# def create_parse_xml_task():
+#     # Load your DAG
+#     dagbag = DagBag()
+#     dag = dagbag.get_dag('entsoe_dynamic_etl_pipeline_final')
+
+#     # Pick a task
+#     task = dag.get_task('parse_xml')
+#     # Create a TaskInstance
+#     ti = TaskInstance(task=task, execution_date=HISTORICAL_START_DATE)
+
+#     # Manually run the task
+#     ti.run(ignore_all_deps=True, ignore_ti_state=True)
+
+def read_raw_xml_data():
+    sql = f"""
+    SELECT xml_data
+    FROM airflow_data.entsoe_raw_xml_landing
+    WHERE id = 42;
+    """
+
+    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    xml = pg_hook.run(sql)
+    return xml
+
+#create_parse_xml_task()
+read_raw_xml_data()
