@@ -15,8 +15,8 @@ import pickle
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from EnergyDatabase.dags.entsoe_ingest import extract_from_api, _generate_run_parameters_logic, store_raw_xml, parse_xml, add_timestamp_column, add_timestamp_elements, combine_df_and_params, load_to_staging_table, merge_data_to_production, cleanup_staging_tables
-
+from EnergyDatabase.dags.entsoe_ingest import extract_from_api, store_raw_xml, parse_xml, add_timestamp_column, add_timestamp_elements, combine_df_and_params, load_to_staging_table, merge_data_to_production, cleanup_staging_tables
+from tasks.entsoe_api_tasks import _generate_run_parameters_logic
 
 HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
 HISTORICAL_END_DATE = datetime(2025, 1, 2, tz="UTC")
