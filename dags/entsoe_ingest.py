@@ -44,6 +44,14 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+@task
+def zip_df_and_params(
+    dfs: list,
+    params: list,
+) -> list[dict]:
+    if len(dfs) != len(params):
+        raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
+    return [{"df": df_obj, "task_param": param} for df_obj, param in zip(dfs, params)]
 
 
 
@@ -87,11 +95,18 @@ def entsoe_dynamic_etl_pipeline():
 
     enriched_dfs = add_timestamp_elements.expand(df=timestamped_dfs)
 
-    combined_for_staging = combine_df_and_params.expand(df=enriched_dfs, task_param=task_parameters)
+    zipped_args = zip_df_and_params(
+        dfs=enriched_dfs,
+        params=task_parameters,
+    )
+
+    combined_for_staging = combine_df_and_params.expand_kwargs(zipped_args)
+
 
     staging_dict = load_to_staging_table.partial(
-        db_conn_id=POSTGRES_CONN_ID
+        db_conn_id=POSTGRES_CONN_ID,
     ).expand(df_and_params=combined_for_staging)
+
 
     merged_results = merge_data_to_production.partial(
         db_conn_id=POSTGRES_CONN_ID

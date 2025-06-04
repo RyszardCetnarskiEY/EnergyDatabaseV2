@@ -65,29 +65,33 @@ test_context['dag_run'] =  type('MockDagRun', (), {'run_id': 'test_1234'})()
 #[2025-06-03, 21:08:41 UTC] {entsoe_ingest.py:240} ERROR - No PT60M resolution data for Actual Generation per Generation Unit Poland {"securityToken": "ff91d43d-322a-43ba-b774-1f24d096388b", "periodStart": "202501010000", "periodEnd": "202501020000", "in_Domain": "10YPL-AREA-----S", "documentType": "A73", "processType": "A16"}
 
 test_params = _generate_run_parameters_logic(HISTORICAL_START_DATE, HISTORICAL_END_DATE)
-test_param = test_params[4]
+#test_param = test_params[4]
+i=0
+for test_param in test_params:
+    print("\n\n\n\n")
+    print(i)
+    print("\n\n\n\n")
+    response = extract_from_api.function(test_param, **test_context)
+    i+=1
 
-response = extract_from_api.function(test_param, **test_context)
+    with open('test_prices.pkl', 'wb') as file:
+        pickle.dump(response, file)
 
+    with open('test_prices.pkl', 'rb') as file:
+        loaded_data = pickle.load(file)
 
-with open('test_prices.pkl', 'wb') as file:
-    pickle.dump(response, file)
+    df = parse_xml.function(loaded_data)
 
-with open('test_prices.pkl', 'rb') as file:
-    loaded_data = pickle.load(file)
+    df_stamped = add_timestamp_column.function(df)
 
-df = parse_xml.function(loaded_data)
+    enriched_dfs = add_timestamp_elements.function(df_stamped)
 
-df_stamped = add_timestamp_column.function(df)
+    combined_for_staging = combine_df_and_params.function(df=enriched_dfs, task_param=test_param)
 
-enriched_dfs = add_timestamp_elements.function(df_stamped)
+    staging_dict = load_to_staging_table.function(db_conn_id = POSTGRES_CONN_ID, df_and_params=combined_for_staging, **test_context)
 
-combined_for_staging = combine_df_and_params.function(df=enriched_dfs, task_param=test_param)
-
-staging_dict = load_to_staging_table.function(db_conn_id = POSTGRES_CONN_ID, df_and_params=combined_for_staging, **test_context)
-
-merged_results = merge_data_to_production.function(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
-cleanup_staging_tables(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
+    merged_results = merge_data_to_production.function(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
+    cleanup_staging_tables(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
 
 #TODOS before pushing
  # Set Azure PostgreSQL for all databases

@@ -41,20 +41,20 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
         return f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['periodStart']}"
 
     df = df.drop("Position", axis=1)
-    id_vars = ["timestamp", "year", "quarter", "month", "day", "dayofweek", "hour", "area_code", "Resolution"]
-    df_melted = pd.melt(df, id_vars = id_vars, value_name = 'quantity').copy()
-    df_melted['quantity'] = pd.to_numeric(df_melted.loc[:, 'quantity'], errors='coerce').astype(float)
+    #id_vars = ["timestamp", "year", "quarter", "month", "day", "dayofweek", "hour", "area_code", "Resolution"]
+    #df = pd.melt(df, id_vars = id_vars, value_name = 'quantity').copy()
+    df['quantity'] = pd.to_numeric(df.loc[:, 'quantity'], errors='coerce').astype(float)
     
     dag_run_id_safe = context['dag_run'].run_id.replace(':', '_').replace('+', '_').replace('.', '_').replace('-', '_')
     staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{dag_run_id_safe}"[:63] # Max PG table name length
     staging_table = "".join(c if c.isalnum() else "_" for c in staging_table) # Sanitize
 
 
-    logger.info(f"Loading {len(df_melted)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
+    logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
     
     create_table_columns = []
-    for col_name, dtype in df_melted.dtypes.items():
+    for col_name, dtype in df.dtypes.items():
         pg_type = "TEXT" # Default
         if "int" in str(dtype).lower(): pg_type = "INTEGER"
         elif "float" in str(dtype).lower(): pg_type = "NUMERIC"
@@ -67,11 +67,11 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
     pg_hook.run(create_stmt)
 
     csv_buffer = StringIO()
-    df_melted.to_csv(csv_buffer, index=False, header=True)
+    df.to_csv(csv_buffer, index=False, header=True)
     csv_buffer.seek(0)
     conn = pg_hook.get_conn()
     cur = conn.cursor()
-    sql_columns = ', '.join([f'"{col}"' for col in df_melted.columns])
+    sql_columns = ', '.join([f'"{col}"' for col in df.columns])
     try:
         cur.copy_expert(sql=f"""COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS ',' QUOTE '"'""", file=csv_buffer)
         conn.commit()

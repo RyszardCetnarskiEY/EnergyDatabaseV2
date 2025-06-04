@@ -96,27 +96,27 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
 
     max_pos = 0
 
-    results_name_dict = {}
-
+    #results_name_dict = {}
+    results_df = pd.DataFrame(columns = ["Position", "Period_Start", "Period_End", "Resolution", "quantity", "variable"])
     resolutions = [elem.text for elem in root.findall('.//ns:resolution', namespaces=ns)]
     found_res = var_resolution in resolutions
     for ts in root.findall('ns:TimeSeries', ns):
         # Determine column name
         name = ts.findtext(column_name, namespaces=ns)
+        if var_name == "Actual Generation per Generation Unit":
+            #TODO rozpracuj to na poziomie configa, może wystarczy wskazać mRID zamiast name. Albo w ogóle zawsze po mRID zapisywać i mieć foreign tables mapujące mRID na coś czytelnego
+            name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)#Nazwy bloków mogą być nieunikalne, użyj innego id
         if not name:
             raise ValueError(f"no data in xml for: {column_name}")
         name = name.strip()
 
-        # Get the period and resolution (optional to use)
-        #TODO - remove api key from request params string, best pass period start and end explicitly as dict, not a str resulting from json serialization - if possible in context od airflow Xcom
         period = ts.find('ns:Period', ns)
         if period is None:
             logger.error(f"No  data for {var_name} {country_name} {request_params_str}")
             continue
-        #.// is for recursive search. Remeber, if putting more nested objects each  needs to begin with a namespace "ns:"
         resolution = period.findtext('.//ns:resolution', namespaces=ns)
-        if resolution != var_resolution and found_res: 
-            #logger.error(f"No {resolution} resolution data for {var_name} {country_name} {request_params_str}") #TODO: this is not an errr, sometimes there can be both 15 min and 60 min resolution data in the xml
+        if resolution != var_resolution and found_res:
+            # Do not store values in two resolutions 
             continue
 
         timeInterval = period.findall('ns:timeInterval', ns)
@@ -142,22 +142,30 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
         else: 
             value_label = name
 
-        if value_label not in results_name_dict:
-            results_name_dict[value_label] = pd.DataFrame(columns=[value_label, "Period_Start", "Period_End"])
+        # if value_label not in results_name_dict:
+        #     results_name_dict[value_label] = pd.DataFrame(columns=[value_label, "Period_Start", "Period_End"])
         
-        partial_df = pd.DataFrame.from_dict(data, orient='index', columns=[value_label])
+        partial_df = pd.DataFrame.from_dict(data, orient='index', columns=["quantity"])
         #TODO: if constructing a multicolumn dataframe, there is no need to store period start and period end for each column. They will be exactly the same. Either drop duplicates or remove altogether
         partial_df.loc[:, "Period_Start"] = start
         partial_df.loc[:, "Period_End"] = end
-        partial_df.loc[:, "Resolution"] = resolution
-        results_name_dict[value_label] = pd.concat([results_name_dict[value_label], partial_df])
+        partial_df.loc[:, "Resolution"] = resolution #TODO - fix large and small letters...
+        partial_df.loc[:, "variable"] = value_label
+        results_df = pd.concat([results_df, partial_df.reset_index(drop=False, names = 'Position' )], axis=0)
+        #results_name_dict[value_label] = pd.concat([results_name_dict[value_label], partial_df])
 
-    if not results_name_dict:
+    if len(results_df)==0:
         raise ValueError("No valid TimeSeries data found in XML.")
 
-    df = pd.concat(results_name_dict, axis=1).T.drop_duplicates().T
-    df.columns = df.columns.droplevel()
-    df = df.reset_index(drop=False, names = 'Position' )
+    #df = pd.concat(results_name_dict, axis=1).T.drop_duplicates().T
+    #df.columns = df.columns.droplevel()
+    #if df.columns.duplicated().any():
+    #    debugpy.listen(("0.0.0.0", 8508))
+    #    debugpy.wait_for_client()  
+    #    debugpy.breakpoint()
+
+
+    #df = df.reset_index(drop=False, names = 'Position' )
     #df.loc[:,"country_name"] = country_name
-    df.loc[:,"area_code"] = area_code
-    return df
+    results_df.loc[:,"area_code"] = area_code
+    return results_df
