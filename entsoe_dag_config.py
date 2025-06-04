@@ -1,5 +1,5 @@
 ENTSOE_VARIABLES = {
-    "Energy Prices": {
+    "Energy Prices fixing I": {
         "table": "energy_prices_day_ahead",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" : 'PT60M'}, #ns will be inferred when parsing xml
@@ -32,24 +32,6 @@ ENTSOE_VARIABLES = {
         "AreaType" : "bidding_zones",
         'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
         "params" : {"documentType": "A73", "processType": "A16"}
-        #"parser": "parse_generation",
     },
 
 }
-
-    ### Tu trzeba rozbić Niemcy na poszczególnych operatorów in_Domain - [M] EIC code of a Control Area
-
-
-
-
-# 50hz:
-# 10YDE-VE-------2
-
-# Tennet:
-# 10YDE-EON------1	
-
-# Amprion:
-# 10Y1001C--00002H	
-
-# Transnet: 
-# 10YDE-ENBW-----N	

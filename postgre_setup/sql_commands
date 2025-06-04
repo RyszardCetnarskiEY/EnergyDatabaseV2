@@ -1,3 +1,6 @@
+--CMD to ssh connect to vm
+-->> C:\Users\Ryszard.Cetnarski>ssh -i C:\Users\Ryszard.Cetnarski\Downloads\pg-db-vm_key.pem rcetnarski@74.248.184.56
+
 sudo apt install postgresql postgresql-contrib
 
 2. Start PostgreSQL Service
@@ -33,14 +36,19 @@ GRANT ALL PRIVILEGES ON SCHEMA airflow_data TO ryszardcetnarski;
 GRANT ALL PRIVILEGES ON SCHEMA public TO ryszardcetnarski;
 
 
-
+-- Nie wiem czy to jest potrzebne bo i tak potem tworzę tę tabelę wewnątrz airflow_data schema więc to chyba nic nie robi
 -- Create table with XML support
 CREATE TABLE raw_entsoe_xml (
     id SERIAL PRIMARY KEY,
-    xml_data XML NOT NULL,
-    request_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    request_parameters JSONB,
+    var_name TEXT,
+    country_name TEXT,
+    area_code TEXT,
     status_code INTEGER,
+    period_start TEXT,
+    period_end TEXT,
+    request_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    xml_data XML NOT NULL,
+    request_parameters JSONB,
     content_type TEXT
 );
 
@@ -55,5 +63,3 @@ GRANT USAGE, SELECT ON SEQUENCE raw_entsoe_xml_id_seq TO ryszardcetnarski;
 SHOW listen_addresses;
 SHOW port;
 
-
-exit

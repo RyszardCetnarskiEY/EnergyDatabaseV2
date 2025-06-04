@@ -9,42 +9,89 @@ import xml.etree.ElementTree as ET
 from io import StringIO
 import debugpy
 
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+import pickle
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from EnergyDatabase.dags.entsoe_ingest import entsoe_dynamic_etl_pipeline.parse_xml
+from EnergyDatabase.dags.entsoe_ingest import extract_from_api, _generate_run_parameters_logic, store_raw_xml, parse_xml, add_timestamp_column, add_timestamp_elements, combine_df_and_params, load_to_staging_table, merge_data_to_production, cleanup_staging_tables
 
 
 HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
+HISTORICAL_END_DATE = datetime(2025, 1, 2, tz="UTC")
 
-# Add the project root directory to sys.path so imports work from dags/
 
-POSTGRES_CONN_ID = "postgres_default"
+POSTGRES_CONN_ID = "postgres_azure_vm"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing" # Changed name for clarity
 
-# def create_parse_xml_task():
-#     # Load your DAG
-#     dagbag = DagBag()
-#     dag = dagbag.get_dag('entsoe_dynamic_etl_pipeline_final')
+COUNTRY_MAPPING = {
+    "PL": {"name": "Poland", "country_domain": ["10YPL-AREA-----S"], "bidding_zones" : ["10YPL-AREA-----S"]},
+    "DE": {"name": "Germany", "country_domain": ["10Y1001A1001A82H"], "bidding_zones": ["10YDE-VE-------2", "10YDE-EON------1", "10YDE-ENBW-----N", "10YDE-RWENET---I"]},
 
-#     # Pick a task
-#     task = dag.get_task('parse_xml')
-#     # Create a TaskInstance
-#     ti = TaskInstance(task=task, execution_date=HISTORICAL_START_DATE)
-
-#     # Manually run the task
-#     ti.run(ignore_all_deps=True, ignore_ti_state=True)
+}
+def delete_raw_xml_data():
+    # Delete all records from the raw XML table
+    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    delete_sql = f'DELETE FROM airflow_data."{raw_xml_table}";'
+    pg_hook.run(delete_sql)
+    logger.info(f"Deleted all records from airflow_data.\"1{raw_xml_table}\".")
 
 def read_raw_xml_data():
-    sql = f"""
-    SELECT xml_data
+    sql = """
+    SELECT request_parameters, xml_data
     FROM airflow_data.entsoe_raw_xml_landing
-    WHERE id = 42;
+    LIMIT 1;  -- gets the "head" of the table
     """
 
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    xml = pg_hook.run(sql)
-    return xml
+    results = pg_hook.get_records(sql)  # Returns list of tuples
 
-#create_parse_xml_task()
-read_raw_xml_data()
+
+    for row in results:
+        print(row[0])  # each row is a tuple like (id,)
+
+    return results
+
+    data_interval_start = context['data_interval_start']
+    data_interval_end = context['data_interval_end']
+
+test_context = {}
+test_context['logical_date'] = HISTORICAL_START_DATE # or data_interval_start            
+test_context['data_interval_start'] = HISTORICAL_START_DATE # or data_interval_start            
+test_context['data_interval_end'] = HISTORICAL_END_DATE # or data_interval_start        
+test_context['dag_run'] =  type('MockDagRun', (), {'run_id': 'test_1234'})()
+
+#[2025-06-03, 21:08:41 UTC] {entsoe_ingest.py:240} ERROR - No PT60M resolution data for Actual Generation per Generation Unit Poland {"securityToken": "ff91d43d-322a-43ba-b774-1f24d096388b", "periodStart": "202501010000", "periodEnd": "202501020000", "in_Domain": "10YPL-AREA-----S", "documentType": "A73", "processType": "A16"}
+
+test_params = _generate_run_parameters_logic(HISTORICAL_START_DATE, HISTORICAL_END_DATE)
+test_param = test_params[4]
+
+response = extract_from_api.function(test_param, **test_context)
+
+
+with open('test_prices.pkl', 'wb') as file:
+    pickle.dump(response, file)
+
+with open('test_prices.pkl', 'rb') as file:
+    loaded_data = pickle.load(file)
+
+df = parse_xml.function(loaded_data)
+
+df_stamped = add_timestamp_column.function(df)
+
+enriched_dfs = add_timestamp_elements.function(df_stamped)
+
+combined_for_staging = combine_df_and_params.function(df=enriched_dfs, task_param=test_param)
+
+staging_dict = load_to_staging_table.function(db_conn_id = POSTGRES_CONN_ID, df_and_params=combined_for_staging, **test_context)
+
+merged_results = merge_data_to_production.function(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
+cleanup_staging_tables(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
+
+#TODOS before pushing
+ # Set Azure PostgreSQL for all databases
+ # Load few data points and try to display on PBI
+ # Create foreign key tables: for genrator units, area_codes, country_codes, generator_types and establish connections
+ # Check additional needed variables
+ # Choose worker - kubernetes? 

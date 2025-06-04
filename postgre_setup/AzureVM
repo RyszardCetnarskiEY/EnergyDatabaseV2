@@ -1,0 +1,5 @@
+#Connect to VM
+ssh -i "C:/Users/Ryszard.Cetnarski/Downloads/pg-db-vm_key.pem" rcetnarski@74.248.184.56
+
+#Connect to psql DB
+psql -h 74.248.184.56 -p 443 -U ryszardcetnarski -d energy_data_sources
