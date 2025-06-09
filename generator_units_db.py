@@ -22,6 +22,8 @@ from entsoe_ingest import extract_from_api
 import sys
 import os
 
+from tasks.entsoe_api_tasks import extract_from_api
+
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -35,9 +37,10 @@ HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
 
 
 
-task_param = {
+pl_task_param = {
 'entsoe_api_params':{
     'BiddingZone_Domain': '10YPL-AREA-----S',
+    'in_Domain': '10YPL-AREA-----S', # not used, only for logger compatibillity 
     'documentType': 'A95',
     'businessType':'B11',
     'Implementation_DateAndOrTime': '2025-01-01',
@@ -45,21 +48,31 @@ task_param = {
 
 },
 'task_run_metadata':{
-    'var_name' : 'Production and Generation Units' 
+    'var_name' : 'Production and Generation Units',
+    "country_code": "10YPL-AREA-----S",
+    "country_name": "Poland",
 }
 
 }
 
 @dag(
-    dag_id='entsoe_dynamic_etl_pipeline_final',
+    dag_id='entsoe_generators_db',
     default_args=default_args,
-    description='Daily ETL for ENTSO-E day-ahead prices for multiple countries since 2023-01-01.',
-    schedule='@daily',
+    description='Yearly ETL for ENTSO-E generator units database',
+    schedule='@yearly',
     start_date=HISTORICAL_START_DATE, # CRITICAL: Use timezone-aware datetime
-    catchup=True,
-    tags=['entsoe', 'energy', 'api', 'etl', 'dynamic'],
+    catchup=False,
+    tags=['entsoe', 'energy', 'api', 'etl', 'generators', 'yearly'],
     max_active_runs=1, # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
     doc_md=__doc__ 
 )
-def entsoe_dynamic_etl_pipeline():
-    pass
+def entsoe_gen_db_pipeline():
+    extracted_data = extract_from_api(task_param=pl_task_param)
+    # xml_data = extracted_data['xml_content']
+    #     # Pretty-print the XML
+    # import xml.dom.minidom
+    # dom = xml.dom.minidom.parseString(xml_data)
+    # pretty_xml = dom.toprettyxml(indent="  ")
+    
+
+entsoe_gen_db_dag = entsoe_gen_db_pipeline()
