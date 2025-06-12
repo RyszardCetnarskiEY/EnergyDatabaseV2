@@ -24,7 +24,7 @@ import os
 # Add the project root directory to sys.path so imports work from dags/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
+from tasks.entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
 from tasks.df_processing_tasks import add_timestamp_column, add_timestamp_elements, combine_df_and_params
 from tasks.entsoe_api_tasks import generate_run_parameters, extract_from_api
 from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables

@@ -1,5 +1,33 @@
+# Moje IP w sieci EY (forward z local hosta)
+echo $WORKSPACE_EXTERNAL_IP
+
+# Install azure CLI
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+sudo apt update
+sudo apt install lsof
+sudo apt install tree
+sudo apt install gh
+
+az login --use-device-code
+
 #Connect to VM
 ssh -i "C:/Users/Ryszard.Cetnarski/Downloads/pg-db-vm_key.pem" rcetnarski@74.248.184.56
 
 #Connect to psql DB
 psql -h 74.248.184.56 -p 443 -U ryszardcetnarski -d energy_data_sources
+
+# Set environement variables for Azure CLI commmands for Airflow-AKS tutorial: https://learn.microsoft.com/en-us/azure/aks/airflow-create-infrastructure
+random=$(echo $RANDOM | tr '[0-9]' '[a-z]')
+export MY_LOCATION=polandcentral
+export MY_RESOURCE_GROUP_NAME=energy-apps-resource-group
+export MY_IDENTITY_NAME=ryszardcetnarskiairflow
+export MY_ACR_REGISTRY=energyappsacr
+export MY_KEYVAULT_NAME=AirFlowKeys
+export MY_CLUSTER_NAME=aks-airflow
+export SERVICE_ACCOUNT_NAME=airflow
+export SERVICE_ACCOUNT_NAMESPACE=airflow
+export AKS_AIRFLOW_NAMESPACE=airflow
+export AKS_AIRFLOW_CLUSTER_NAME=cluster-aks-airflow
+export AKS_AIRFLOW_LOGS_STORAGE_ACCOUNT_NAME=airflowenergystorage
+export AKS_AIRFLOW_LOGS_STORAGE_CONTAINER_NAME=airflow-logs
+export AKS_AIRFLOW_LOGS_STORAGE_SECRET_NAME=storage-account-credentials
