@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Debug test_gen_units_pipeline.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_tasks/test_gen_units_pipeline.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}
