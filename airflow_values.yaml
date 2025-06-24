@@ -1,3 +1,4 @@
+# Option 1: Using extraEnv (if supported by your chart)
 images:
   airflow:
     repository: mydnsrandomnamedafj.azurecr.io/airflow
@@ -53,10 +54,27 @@ env:
     value: /opt/airflow
   - name: AIRFLOW__CORE__DEFAULT_TIMEZONE
     value: 'UTC'
-  - name: AIRFLOW_CONN_POSTGRES_AZURE_VM
-    value: postgresql://ryszardcetnarski:EY2025@74.248.184.56:443/energy_data_sources?sslmode=require
-  - name: AIRFLOW_CONN_ENTSOE
-    value: https://:ff91d43d-322a-43ba-b774-1f24d096388b@web-api.tp.entsoe.eu/api
+  # Connection environment variables using secrets
+  # - name: AIRFLOW_CONN_POSTGRES_AZURE_VM
+  #   value: "postgresql://ryszardcetnarski:$(POSTGRES_PASSWORD)@74.248.184.56:443/energy_data_sources?sslmode=require"
+  # - name: AIRFLOW_CONN_ENTSOE
+  #   value: "https://:$(ENTSOE_TOKEN)@web-api.tp.entsoe.eu/api"
+
+# Try using extraEnv for secret references
+extraEnvFrom: |
+  - secretRef:
+      name: airflow-connections-secrets
+# extraEnv:
+#   - name: POSTGRES_PASSWORD
+#     valueFrom:
+#       secretKeyRef:
+#         name: airflow-connections-secrets
+#         key: postgres-password
+#   - name: ENTSOE_TOKEN
+#     valueFrom:
+#       secretKeyRef:
+#         name: airflow-connections-secrets
+#         key: entsoe-token
 
 # Configuration for postgresql subchart
 # Not recommended for production! Instead, spin up your own Postgresql server and use the `data` attribute in this
