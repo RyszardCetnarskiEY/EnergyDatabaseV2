@@ -19,6 +19,8 @@ from airflow.operators.empty import EmptyOperator # Not used in final version, b
 from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago # Alternative for start_date
 
+from entsoe_dag_config import ENTSOE_VARIABLES
+
 import sys
 import os
 
@@ -65,6 +67,102 @@ def generate_run_parameters(**context) -> List[Dict[str, str]]:
     logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
     return task_params
 
+
+def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
+    """
+    Zwraca odpowiedni(e) parametr(y) domeny dla zapytania ENTSO-E API.
+    """
+    if document_type == "A65":  # Total Load (actual/forecast)
+        return "outBiddingZone_Domain"
+    
+    elif document_type == "A44":  # Day-ahead prices
+        return ("in_Domain", "out_Domain")
+    
+    elif document_type in ["A69", "A71", "A73", "A75"]:  # Generation Forecasts + Actual Generation per Unit
+        return "in_Domain"
+    
+    return "in_Domain"
+
+
+
+@task(task_id='extract_from_api')
+def extract_from_api(task_param: Dict[str, Any], **context) -> str:
+    """
+    Fetches data from the ENTSOE API for a given country and period.
+    api_params is expected to be a dict with 'periodStart', 'periodEnd', 'country_code'.
+    """
+    entsoe_api_params = task_param["entsoe_api_params"]
+    task_run_metadata = task_param["task_run_metadata"]
+
+    var_name = task_run_metadata["var_name"]
+    var_config = ENTSOE_VARIABLES[var_name]
+    params = var_config["params"].copy()
+
+    document_type = params.get("documentType")
+    process_type = params.get("processType", "")
+    domain_code = entsoe_api_params["in_Domain"]
+
+    # Dobierz poprawny parametr domeny
+    domain_param = get_domain_param_key(document_type, process_type)
+
+    if domain_param == "in_Domain":
+        params["in_Domain"] = domain_code
+    elif domain_param == "outBiddingZone_Domain":
+        params["outBiddingZone_Domain"] = domain_code
+    elif isinstance(domain_param, tuple):
+        params["in_Domain"] = domain_code
+        params["out_Domain"] = domain_code
+
+    # Dodaj czas + token
+    params.update({
+        "periodStart": entsoe_api_params["periodStart"],
+        "periodEnd": entsoe_api_params["periodEnd"]
+    })
+
+    http_hook = HttpHook(method='GET', http_conn_id="ENTSOE")
+    conn = http_hook.get_connection("ENTSOE")
+    api_key = conn.password
+    params["securityToken"] = api_key
+
+    base_url = conn.host.rstrip("/")
+    log_str = (
+        f"{var_name} {task_run_metadata['country_name']} "
+        f"({domain_code}) for period: {params['periodStart']} - {params['periodEnd']}"
+    )
+
+    try:
+        logger.info(f"Fetching data for {log_str}")
+        session = http_hook.get_conn()
+        response = session.get(base_url, params=params, timeout=60)
+
+        response.raise_for_status()
+        response.encoding = 'utf-8'
+
+        logger.info(f"Successfully extracted data for {log_str}")
+        return {
+            'xml_content': response.text,
+            'status_code': response.status_code,
+            'content_type': response.headers.get('Content-Type'),
+            'var_name': var_name,
+            'country_name': task_run_metadata['country_name'],
+            'country_code': task_run_metadata['country_code'],
+            'area_code': domain_code,
+            'period_start': params['periodStart'],
+            'period_end': params['periodEnd'],
+            'logical_date_processed': context['logical_date'].isoformat(),
+            'request_params': json.dumps(params),
+            'task_run_metadata': task_run_metadata
+        }
+
+    except requests.exceptions.HTTPError as http_err:
+        logger.error(f"HTTP error for {log_str}: {http_err} - Response: {response.text}")
+        raise AirflowException(f"API request failed for {log_str} with status {response.status_code}: {response.text}")
+    except Exception as e:
+        logger.error(f"Error extracting data for {log_str}: {str(e)}")
+        raise
+
+
+''' OLD
 @task(task_id='extract_from_api')
 def extract_from_api(task_param: Dict[str, Any],**context) -> str:
     """
@@ -107,7 +205,7 @@ def extract_from_api(task_param: Dict[str, Any],**context) -> str:
         logger.info(f"Successfully extracted data for  {log_str}")
         return {
             'xml_content': response.text,
-            # 'xml_bytes': response.content, #TODO a bit heavy, choose one, content or text
+            # 'xml_bytes': response.content,
             'status_code': response.status_code,
             'content_type': response.headers.get('Content-Type'),
             'var_name': task_run_metadata['var_name'],
@@ -127,7 +225,7 @@ def extract_from_api(task_param: Dict[str, Any],**context) -> str:
         raise AirflowException(f"API request failed for {log_str} with status {response.status_code}: {response.text}")
     except Exception as e:
         logger.error(f"Error extracting data for {log_str}: {str(e)}")
-        raise
-
+        raise 
+'''
 
 

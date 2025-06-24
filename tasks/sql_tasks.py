@@ -8,21 +8,18 @@ from typing import Dict, Any, List
 import xml.etree.ElementTree as ET
 from io import StringIO
 import debugpy
+import sys
+import os
+import logging
 
 from airflow.operators.python import get_current_context
-
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.http.hooks.http import HttpHook
-
 from airflow.operators.empty import EmptyOperator # Not used in final version, but good to know
 from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago # Alternative for start_date
 
-import sys
-import os
-
-import logging
 
 logger = logging.getLogger(__name__)
 POSTGRES_CONN_ID = "postgres_azure_vm"
@@ -84,7 +81,6 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
 @task(task_id='merge_to_production_table')
 def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
     
-
     staging_table_name = staging_dict['staging_table_name']
     production_table_name = staging_dict["var_name"].replace(' ', '_').lower()
     if staging_table_name.startswith("empty_staging_"):
@@ -156,6 +152,7 @@ def create_initial_tables(db_conn_id: str, raw_xml_table: str) -> dict:
     # debugpy.breakpoint()
     return {"raw_xml_table": raw_xml_table}
 
+
 def _create_prod_table(variable_name):
 
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
@@ -178,8 +175,6 @@ def _create_prod_table(variable_name):
         UNIQUE (timestamp, variable));"""
     pg_hook.run(create_prod_sql)
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
-
-
 
 
 @task

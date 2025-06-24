@@ -124,5 +124,5 @@ def entsoe_dynamic_etl_pipeline():
 
 
 
-entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
+#entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
 
