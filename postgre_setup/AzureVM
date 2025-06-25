@@ -1,5 +1,48 @@
+# Moje IP w sieci EY (forward z local hosta)
+echo $WORKSPACE_EXTERNAL_IP
+
+# Install azure CLI
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+sudo apt update
+sudo apt install lsof
+sudo apt install tree
+sudo apt install gh
+
+az login --use-device-code
+
 #Connect to VM
 ssh -i "C:/Users/Ryszard.Cetnarski/Downloads/pg-db-vm_key.pem" rcetnarski@74.248.184.56
 
 #Connect to psql DB
 psql -h 74.248.184.56 -p 443 -U ryszardcetnarski -d energy_data_sources
+
+# Set environement variables for Azure CLI commmands for Airflow-AKS tutorial: https://learn.microsoft.com/en-us/azure/aks/airflow-create-infrastructure
+random=$(echo $RANDOM | tr '[0-9]' '[a-z]')
+export MY_LOCATION=polandcentral
+export MY_RESOURCE_GROUP_NAME=energy-apps-resource-group
+export MY_IDENTITY_NAME=ryszardcetnarskiairflow
+export MY_ACR_REGISTRY=energyappsacr
+export MY_KEYVAULT_NAME=AirFlowKeys
+export MY_CLUSTER_NAME=aks-airflow
+export SERVICE_ACCOUNT_NAME=airflow
+export SERVICE_ACCOUNT_NAMESPACE=airflow
+export AKS_AIRFLOW_NAMESPACE=airflow
+export AKS_AIRFLOW_CLUSTER_NAME=cluster-aks-airflow
+export AKS_AIRFLOW_LOGS_STORAGE_ACCOUNT_NAME=airflowenergystorage
+export AKS_AIRFLOW_LOGS_STORAGE_CONTAINER_NAME=airflow-logs
+export AKS_AIRFLOW_LOGS_STORAGE_SECRET_NAME=storage-account-credentials
+
+#Making secrets for airflow connections - define hole connection strings in kubernetes secret store
+kubectl create secret generic airflow-connections-secrets \
+  --from-literal=AIRFLOW_CONN_POSTGRES_AZURE_VM='postgres://ryszardcetnarski:EY2025@74.248.184.56:443/energy_data_sources?sslmode=require' \
+  --from-literal=AIRFLOW_CONN_ENTSOE='https://:@ff91d43d-322a-43ba-b774-1f24d096388b@web-api.tp.entsoe.eu/api' \
+  --namespace=airflow
+
+
+airflow users create \
+    --username ryszardcetnarski \
+    --firstname Admin \
+    --lastname User \
+    --role Admin \
+    --email ryszard.cetnarski@pl.ey.com\
+    --password EY2025

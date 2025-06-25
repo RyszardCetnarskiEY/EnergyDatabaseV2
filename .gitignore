@@ -4,6 +4,15 @@ __pycache__/
 *$py.class
 *.db
 logs/
+airpgvenv/
+Dockerfile
+get_helm.sh
+helm.tar.gz
+LICENSE
+secretstore.yaml
+*.yaml
+correctairflowvenv/
+linux-amd64
 
 # C extensions
 *.so
