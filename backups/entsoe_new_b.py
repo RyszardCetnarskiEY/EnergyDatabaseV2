@@ -7,13 +7,17 @@ from datetime import timedelta
 from pendulum import datetime
 from io import StringIO
 import xml.etree.ElementTree as ET
+import copy
+
 import pandas as pd
 import requests
 from pendulum import datetime
 from typing import Dict, Any, List
+
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException
 from airflow.operators.empty import EmptyOperator
+
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
@@ -64,40 +68,30 @@ ENTSOE_VARIABLES_all = {
     }
 }
 
+
 ENTSOE_VARIABLES = {
-    "Generation Forecasts Wind and Solar Main": {
-        "table": "generation_forecasts_wind_solar_main", 
-        "final_table": "generation_forecasts_wind_solar_main", #+++
+    "Generation Forecasts for Wind and Solar": {
+        "table": "generation_forecasts_wind_solar_MAIN",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:MktPSRType/ns:psrType', "resolution" : 'PT15M'},
         "params" : {"documentType": "A69", "processType": "A01"}
     },
 
-    "Actual Generation per Production Unit Main": {
-        "table": "actual_generation_per_production_unit_main",
-        "final_table": "actual_generation_per_production_unit_main", #+++
+    "Actual Generation per Generation Unit": {
+        "table": "actual_generation_per_production_unit_MAIN",
         "AreaType" : "bidding_zones",
         'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
         "params" : {"documentType": "A73", "processType": "A16"}
     },
 
-    "Generation Forecasts Day ahead Main": {
-        "table": "generation_forecasts_day_ahead_main",
-        "final_table": "generation_forecasts_day_ahead_main", #+++
+    "Generation Forecasts - Day ahead": {
+        "table": "generation_forecasts_day_ahead_MAIN",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
         "params" : {"documentType": "A71", "processType": "A01"}
     }
 }
 
-ENTSOE_VARIABLES_TEST1 = {
-    "Actual Generation per Production Unit Main": {
-        "table": "actual_generation_per_production_unit_main",
-        "AreaType" : "bidding_zones",
-        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
-        "params" : {"documentType": "A73", "processType": "A16"}
-    }
-}
 
 POSTGRES_CONN_ID = "postgres_azure_vm"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"
@@ -143,6 +137,7 @@ def create_initial_tables(db_conn_id: str, raw_xml_table: str) -> dict:
     
     return {"raw_xml_table": raw_xml_table}
 
+
 def _generate_run_parameters_logic(data_interval_start, data_interval_end):
     """Core logic extracted for testing"""
     task_params = []
@@ -150,11 +145,7 @@ def _generate_run_parameters_logic(data_interval_start, data_interval_end):
     for var_name, entsoe_params_dict in ENTSOE_VARIABLES.items():
         for country_code, country_details in COUNTRY_MAPPING.items():
             for in_domain in country_details[entsoe_params_dict["AreaType"]]:
-                logger.info(
-                    f"Generated task_param: var_name={var_name}, "
-                    f"table={entsoe_params_dict['table']}, "
-                    f"country={country_code}, area={in_domain}"
-                )
+                config_copy = copy.deepcopy(entsoe_params_dict)
                 task_params.append({
                     "entsoe_api_params": {
                         "periodStart": data_interval_start.strftime('%Y%m%d%H%M'),
@@ -164,12 +155,18 @@ def _generate_run_parameters_logic(data_interval_start, data_interval_end):
                     },
                     "task_run_metadata": {       
                         "var_name": var_name, 
-                        "config_dict": entsoe_params_dict,
-                        #"config_dict": json.loads(json.dumps(entsoe_params_dict)),
+                        #"config_dict": entsoe_params_dict,
+
+                        #"config_dict": copy.deepcopy(entsoe_params_dict), #LATEST
+                        "config_dict": config_copy,
+
                         "country_code": country_code,
                         "country_name": country_details["name"],
-                        "area_code": in_domain,
-                        "final_table_name": entsoe_params_dict["final_table"], #+++
+
+                        #"table": entsoe_params_dict["table"], #LATEST
+                        "table": config_copy["table"],  # ✅ używamy już niemutowanego
+
+                        "area_code": in_domain
                     }
                 })
     
@@ -185,6 +182,7 @@ def generate_run_parameters(**context) -> List[Dict[str, str]]:
     
     logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
     return task_params
+
 
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
@@ -210,12 +208,14 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> str:
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
-    var_name = task_run_metadata["var_name"]
-    ##var_config = ENTSOE_VARIABLES[var_name]
-    var_config = task_run_metadata["config_dict"]
-    params = var_config["params"].copy()
+    #var_name = task_run_metadata["var_name"]
+    #var_config = ENTSOE_VARIABLES[var_name]
+    #params = var_config["params"].copy()
 
-    logger.info(f"[extract_from_api] var_name={var_name}, table={var_config.get('table')}") ##
+    var_name = task_run_metadata["var_name"]
+    var_config = task_run_metadata["config_dict"]
+    #params = var_config["params"].copy() #LATEST
+    params = copy.deepcopy(var_config["params"])
 
     params["in_Domain"] = entsoe_api_params["in_Domain"]
 
@@ -346,8 +346,11 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     found_res = var_resolution in resolutions
     for ts in root.findall('ns:TimeSeries', ns):
         name = ts.findtext(column_name, namespaces=ns)
-
-        if var_name == "Actual Generation per Production Unit Main":
+        #if var_name == "Actual Generation per Generation Unit":
+            #TODO rozpracuj to na poziomie configa, może wystarczy wskazać mRID zamiast name. Albo w ogóle zawsze po mRID zapisywać i mieć foreign tables mapujące mRID na coś czytelnego
+            #name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)#Nazwy bloków mogą być nieunikalne, użyj innego id
+       
+        if var_name == "Actual Generation per Generation Unit":
             name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)
             registered_resource = ts.findtext('ns:registeredResource.mRID', namespaces=ns)
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
@@ -357,7 +360,6 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
             if not ts_id: ts_id = "no_ts_id"
 
             value_label = f"{var_name}__{registered_resource}__{ts_id}"
-            ###value_label = registered_resource.strip()
 
         if not name:
             logger.warning(f"No mRID found for TimeSeries in {var_name} {country_name} ({area_code}) – skipping this block.")
@@ -397,7 +399,8 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
                 except ValueError:
                     continue
 
-        if var_name == "Generation Forecasts Day ahead Main":
+        if var_name == "Generation Forecasts - Day ahead":
+            # Dodajemy dodatkowy kontekst (in/out oraz mRID)
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
             in_zone = ts.findtext('ns:inBiddingZone_Domain.mRID', namespaces=ns)
             out_zone = ts.findtext('ns:outBiddingZone_Domain.mRID', namespaces=ns)
@@ -409,16 +412,22 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
             else:
                 zone_type = "unknown"
 
+            #value_label = f"{var_name}__{zone_type}__{ts_id.strip()}"
             value_label = f"{var_name}__{zone_type}"
-            ###value_label = f"{var_name}"
 
         else:
             if column_name == 'ns:mRID':
                 value_label = f"{var_name}__{area_code}"
-                ###value_label = f"{var_name}"
             else:
                 value_label = f"{name}__{area_code}"
-                ###value_label = f"{var_name}"
+
+            # Domyślna logika – zgodna z wcześniejszymi regułami
+            """
+            if column_name == 'ns:mRID':
+                value_label = var_name
+            else:
+                value_label = name
+            """
 
 
         partial_df = pd.DataFrame.from_dict(data, orient='index', columns=["quantity"])
@@ -433,13 +442,6 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame()
 
     results_df["area_code"] = area_code
-
-
-    logger.info(
-        f"[parse_xml] Parsed {len(results_df)} rows for var_name={var_name}, "
-        f"area_code={area_code}, table={extracted_data['task_run_metadata']['config_dict'].get('table')}"
-    )
-
     return results_df
 
 @task(task_id='add_timestamp')
@@ -505,7 +507,11 @@ def zip_df_and_params(dfs: list, params: list) -> list[dict]:
 
 @task
 def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]):
+    task_param = copy.deepcopy(task_param)
+    logger.info(f"[COMBINE] var_name={task_param['task_run_metadata']['var_name']} | table={task_param['task_run_metadata']['table']}")
     return {"df": df, "params": task_param}
+
+    #return {"df": df, "params": task_param, "table": task_param["task_run_metadata"]["table"]} #DODANE
 
 @task(task_id='load_to_staging_table')
 def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
@@ -521,10 +527,9 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
     if df.empty:
         return {
             "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
-            "var_name": task_param["task_run_metadata"]["var_name"]#,
-            #"table": task_param["task_run_metadata"]["table"]
+            "var_name": task_param["task_run_metadata"]["var_name"],
+            "table": task_param["task_run_metadata"]["table"]
         }
-
 
     df = df.drop("Position", axis=1)
     df['quantity'] = pd.to_numeric(df.loc[:, 'quantity'], errors='coerce').astype(float)
@@ -553,15 +558,6 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
     pg_hook.run(drop_stmt)
     pg_hook.run(create_stmt)
 
-
-    #+++
-    logger.info(
-        f"[load_to_staging_table] final_table={task_param['task_run_metadata']['final_table_name']}, "
-        f"var_name={task_param['task_run_metadata']['var_name']}, "
-        f"staging_table={staging_table}, records={len(df)}"
-    )
-
-
     csv_buffer = StringIO()
     df.to_csv(csv_buffer, index=False, header=True)
     csv_buffer.seek(0)
@@ -576,8 +572,8 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
         conn.close()
     return {
         "staging_table_name": staging_table, 
-        "var_name": task_param["task_run_metadata"]["var_name"],
-        "final_table_name": task_param["task_run_metadata"]["final_table_name"]
+        "var_name":task_param["task_run_metadata"]["var_name"], 
+        "table": task_param["task_run_metadata"]["table"]
     }
 
 def _create_prod_table(variable_name):
@@ -609,16 +605,10 @@ def _create_prod_table(variable_name):
 def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
     
     staging_table_name = staging_dict['staging_table_name']
-    
-    #production_table_name = staging_dict["var_name"].replace(" ", "_").lower()
-    production_table_name = staging_dict["final_table_name"] #+++
-
-    logger.info(f"[MERGE] Merging {staging_table_name} → {production_table_name}") ##
-
+    production_table_name = staging_dict["table"]
     if staging_table_name.startswith("empty_staging_"):
         logger.info(f"Skipping merge for empty/failed staging data: {staging_table_name}")
         return f"Skipped merge for {staging_table_name}"
-
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
 
     _create_prod_table(production_table_name)
@@ -647,12 +637,6 @@ def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
             quantity = EXCLUDED.quantity,
             processed_at = CURRENT_TIMESTAMP;
         """
-
-    logger.info(
-        f"[merge_data_to_production] Merging from staging={staging_table_name} → final_table={production_table_name} "
-        f"for var_name={staging_dict.get('var_name')}"
-    )
-    
     try:
         pg_hook.run(merge_sql)
         logger.info(f"Successfully merged data from airflow_data.\"{staging_table_name}\" to airflow_data.\"{production_table_name}\".")
@@ -660,6 +644,7 @@ def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
         logger.error(f"Error merging data from {staging_table_name} to {production_table_name}: {e}")
         raise
     return f"Merged {staging_table_name}"
+    #return 0
 
 @task
 def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str):
@@ -715,9 +700,11 @@ def entsoe_new_etl_pipeline():
 
     combined_for_staging = combine_df_and_params.expand_kwargs(zipped_args)
 
+
     staging_dict = load_to_staging_table.partial(
         db_conn_id=POSTGRES_CONN_ID,
     ).expand(df_and_params=combined_for_staging)
+
 
     merged_results = merge_data_to_production.partial(
         db_conn_id=POSTGRES_CONN_ID

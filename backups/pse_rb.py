@@ -84,30 +84,6 @@ ENTITY_CONFIG = {
             "business_date", "publication_ts", "publication_ts_utc"
         ],
         "table": "popmb_rmb_data"
-    },
-    # pomb-rbn - Oferty na moce bilansujące przyjęte na RBN
-    "pomb-rbn": {
-        "columns": [
-            "ofc", "dtime", "period", "pofmax", "pofmin", "plofmax", "plofmin",
-            "dtime_utc", "period_utc", "reserve_type", "business_date",
-            "publication_ts", "publication_ts_utc"
-        ],
-        "table": "pomb_rbn_data"
-    },
-    # crb-rozl - Ceny na rb, w tym: CEN, CKOEB, CEBśr, CEPpp
-    "crb-rozl": {
-        "columns": [
-            "dtime", "period", "cen_cost", "dtime_utc", "ckoeb_cost", "period_utc",
-            "ceb_pp_cost", "ceb_sr_cost", "business_date", "publication_ts", "publication_ts_utc"
-        ],
-        "table": "crb_rozl_data"
-    },
-    "kmb-kro-rozl": {
-        "columns": [
-            "kmb", "kro", "dtime", "period", "dtime_utc", "period_utc",
-            "business_date", "publication_ts", "publication_ts_utc"
-        ],
-        "table": "kmb_kro_rozl_data"
     }
 }
 
@@ -196,4 +172,4 @@ def pse_multi_entity_etl():
         load_entity_data_to_postgres.override(task_id=f"load_data_{entity}")(raw)
 
 
-dag = pse_multi_entity_etl()
+#dag = pse_multi_entity_etl()

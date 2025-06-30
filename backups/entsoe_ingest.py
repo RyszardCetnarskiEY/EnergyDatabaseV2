@@ -116,10 +116,8 @@ def entsoe_dynamic_etl_pipeline():
         db_conn_id=POSTGRES_CONN_ID
     ).expand(staging_dict=staging_dict)
     
-    #Set cleanup to run after all merges
     cleanup_task.set_upstream(merged_results)
     
-    # Explicitly make sure XML storage is upstream of parsing (though usually inferred)
     parsed_dfs.set_upstream(stored_xml_ids)
 
 
