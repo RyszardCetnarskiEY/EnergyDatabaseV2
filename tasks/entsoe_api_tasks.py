@@ -167,6 +167,7 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
         logger.error(f"Error extracting data for {log_str}: {str(e)}")
         raise
 
+
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
     Zwraca odpowiedni(e) parametr(y) domeny dla zapytania ENTSO-E API.
