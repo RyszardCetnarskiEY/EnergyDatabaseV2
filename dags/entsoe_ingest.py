@@ -1,30 +1,26 @@
-from datetime import timedelta
-from pendulum import datetime
 import json
+import sys
+import os
 import logging
 import requests
 import pandas as pd
-from typing import Dict, Any, List
 import xml.etree.ElementTree as ET
-from io import StringIO
 import debugpy
-
-
+from datetime import timedelta
+from pendulum import datetime
+from typing import Dict, Any, List
+from io import StringIO
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.http.hooks.http import HttpHook
-
 from airflow.operators.empty import EmptyOperator # Not used in final version, but good to know
 from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago # Alternative for start_date
 
-import sys
-import os
-
 # Add the project root directory to sys.path so imports work from dags/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
+from tasks.entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
 from tasks.df_processing_tasks import add_timestamp_column, add_timestamp_elements, combine_df_and_params
 from tasks.entsoe_api_tasks import generate_run_parameters, extract_from_api
 from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables
@@ -33,7 +29,6 @@ from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
 
-#logger = logging.getLogger(__name__)
 
 default_args = {
     'owner': 'airflow',
@@ -45,10 +40,7 @@ default_args = {
 }
 
 @task
-def zip_df_and_params(
-    dfs: list,
-    params: list,
-) -> list[dict]:
+def zip_df_and_params(dfs: list, params: list) -> list[dict]:
     if len(dfs) != len(params):
         raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
     return [{"df": df_obj, "task_param": param} for df_obj, param in zip(dfs, params)]
@@ -56,7 +48,6 @@ def zip_df_and_params(
 
 
 print('TODO - move to taskGroup one day and share some tasks for other variables, like generating units operation points')
-# A more advanced pattern could be a TaskGroup that is mapped.
 
 @dag(
     dag_id='entsoe_dynamic_etl_pipeline_final',
@@ -70,7 +61,6 @@ print('TODO - move to taskGroup one day and share some tasks for other variables
     doc_md=__doc__ 
 )
 def entsoe_dynamic_etl_pipeline():
-    # --- Task Orchestration ---
 
     initial_setup = create_initial_tables(
         db_conn_id=POSTGRES_CONN_ID,
@@ -79,14 +69,13 @@ def entsoe_dynamic_etl_pipeline():
 
     task_parameters = generate_run_parameters()
 
-    # Ensure setup is done before dynamic tasks
     task_parameters.set_upstream(initial_setup)
 
     extracted_data = extract_from_api.expand(task_param=task_parameters)
 
     stored_xml_ids = store_raw_xml.partial(
         db_conn_id=POSTGRES_CONN_ID,
-        table_name=initial_setup["raw_xml_table"] # Use XComArg from setup task
+        table_name=initial_setup["raw_xml_table"]
     ).expand(extracted_data=extracted_data)
 
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
@@ -102,11 +91,9 @@ def entsoe_dynamic_etl_pipeline():
 
     combined_for_staging = combine_df_and_params.expand_kwargs(zipped_args)
 
-
     staging_dict = load_to_staging_table.partial(
         db_conn_id=POSTGRES_CONN_ID,
     ).expand(df_and_params=combined_for_staging)
-
 
     merged_results = merge_data_to_production.partial(
         db_conn_id=POSTGRES_CONN_ID
@@ -121,5 +108,5 @@ def entsoe_dynamic_etl_pipeline():
     parsed_dfs.set_upstream(stored_xml_ids)
 
 
-#entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
+entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
 
