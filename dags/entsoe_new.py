@@ -3,6 +3,7 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import sys
+import random
 from datetime import timedelta
 from pendulum import datetime
 from io import StringIO
@@ -10,7 +11,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 from pendulum import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException
 from airflow.operators.empty import EmptyOperator
@@ -67,7 +68,6 @@ ENTSOE_VARIABLES_all = {
 ENTSOE_VARIABLES = {
     "Generation Forecasts Wind and Solar Main": {
         "table": "generation_forecasts_wind_solar_main", 
-        "final_table": "generation_forecasts_wind_solar_main", #+++
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:MktPSRType/ns:psrType', "resolution" : 'PT15M'},
         "params" : {"documentType": "A69", "processType": "A01"}
@@ -75,7 +75,6 @@ ENTSOE_VARIABLES = {
 
     "Actual Generation per Production Unit Main": {
         "table": "actual_generation_per_production_unit_main",
-        "final_table": "actual_generation_per_production_unit_main", #+++
         "AreaType" : "bidding_zones",
         'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
         "params" : {"documentType": "A73", "processType": "A16"}
@@ -83,7 +82,6 @@ ENTSOE_VARIABLES = {
 
     "Generation Forecasts Day ahead Main": {
         "table": "generation_forecasts_day_ahead_main",
-        "final_table": "generation_forecasts_day_ahead_main", #+++
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
         "params" : {"documentType": "A71", "processType": "A01"}
@@ -109,7 +107,6 @@ COUNTRY_MAPPING = {
 }
 
 HISTORICAL_START_DATE = datetime(2025, 6, 1, tz="UTC")
-#HISTORICAL_START_DATE = datetime(2021, 1, 1, tz="UTC")
 
 default_args = {
     'owner': 'airflow',
@@ -150,11 +147,6 @@ def _generate_run_parameters_logic(data_interval_start, data_interval_end):
     for var_name, entsoe_params_dict in ENTSOE_VARIABLES.items():
         for country_code, country_details in COUNTRY_MAPPING.items():
             for in_domain in country_details[entsoe_params_dict["AreaType"]]:
-                logger.info(
-                    f"Generated task_param: var_name={var_name}, "
-                    f"table={entsoe_params_dict['table']}, "
-                    f"country={country_code}, area={in_domain}"
-                )
                 task_params.append({
                     "entsoe_api_params": {
                         "periodStart": data_interval_start.strftime('%Y%m%d%H%M'),
@@ -165,11 +157,9 @@ def _generate_run_parameters_logic(data_interval_start, data_interval_end):
                     "task_run_metadata": {       
                         "var_name": var_name, 
                         "config_dict": entsoe_params_dict,
-                        #"config_dict": json.loads(json.dumps(entsoe_params_dict)),
                         "country_code": country_code,
                         "country_name": country_details["name"],
                         "area_code": in_domain,
-                        "final_table_name": entsoe_params_dict["final_table"], #+++
                     }
                 })
     
@@ -177,7 +167,6 @@ def _generate_run_parameters_logic(data_interval_start, data_interval_end):
 
 @task
 def generate_run_parameters(**context) -> List[Dict[str, str]]:
-
     data_interval_start = context['data_interval_start']
     data_interval_end = context['data_interval_end']
     
@@ -185,6 +174,42 @@ def generate_run_parameters(**context) -> List[Dict[str, str]]:
     
     logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
     return task_params
+
+def _entsoe_http_connection_setup():
+    http_hook = HttpHook(method="GET", http_conn_id="ENTSOE")
+    conn = http_hook.get_connection("ENTSOE")
+    api_key = conn.password
+
+    logger.info(f"securityToken: {api_key[0:10]!r}")  # the !r will show hidden chars
+    # logger.info(f"securityToken: {api_key[10::]!r}")  # the !r will show hidden chars
+
+    base_url = conn.host.rstrip("/")  # rstrip chyba nic nie robi, do usunięcia
+    # Todo, do I need to define this connection anew every task instance?
+    if conn.host.startswith("http"):
+        base_url = conn.host.rstrip("/")
+    else:
+        base_url = (
+            f"https://{conn.host.rstrip('/')}" + "/api"
+        )  # Added because I think airflow UI connections and one defined in helm chart behave slightly differently
+
+    logger.info(f"[DEBUG] REQUEST URL: {base_url}")
+
+    return base_url, api_key, conn, http_hook
+
+def _get_entsoe_response(log_str, api_request_params):
+    logger.info(f"Fetching data for {log_str}")
+    base_url, api_key, conn, http_hook = _entsoe_http_connection_setup()
+
+    api_request_params = {
+        "securityToken": api_key,
+        **api_request_params,
+    }
+    session = http_hook.get_conn()
+    response = session.get(base_url, params=api_request_params, timeout=60)
+
+    response.raise_for_status()
+    response.encoding = "utf-8"  # explicitly set encoding if not set
+    return response
 
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
@@ -202,7 +227,8 @@ def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     return "in_Domain"
 
 @task(task_id='extract_from_api')
-def extract_from_api(task_param: Dict[str, Any], **context) -> str:
+#def extract_from_api(task_param: Dict[str, Any], **context) -> str: #Poprawione
+def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     """
     Fetches data from the ENTSOE API for a given country and period.
     api_params is expected to be a dict with 'periodStart', 'periodEnd', 'country_code'.
@@ -210,21 +236,30 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> str:
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
-    var_name = task_run_metadata["var_name"]
-    ##var_config = ENTSOE_VARIABLES[var_name]
-    var_config = task_run_metadata["config_dict"]
-    params = var_config["params"].copy()
+    """ TODO: Ustalić co to bo używamy dalej
+    api_kwargs = {}
+    if task_run_metadata["var_name"] == "Energy Prices fixing I":
+        api_kwargs["out_Domain"] = entsoe_api_params["in_Domain"]
 
-    logger.info(f"[extract_from_api] var_name={var_name}, table={var_config.get('table')}") ##
+    api_request_params = dict(entsoe_api_params, **api_kwargs)
+    """
 
-    params["in_Domain"] = entsoe_api_params["in_Domain"]
-
-    document_type = params.get("documentType")
-    process_type = params.get("processType", "")
+    document_type = entsoe_api_params.get("documentType") #Poprawione
+    process_type = entsoe_api_params.get("processType", "") #Poprawione
     domain_code = entsoe_api_params["in_Domain"]
 
     domain_param = get_domain_param_key(document_type, process_type)
 
+    api_request_params = entsoe_api_params.copy() #Dodane
+    if domain_param == "in_Domain":
+        api_request_params["in_Domain"] = domain_code
+    elif domain_param == "outBiddingZone_Domain":
+        api_request_params["outBiddingZone_Domain"] = domain_code
+    elif isinstance(domain_param, tuple):
+        api_request_params["in_Domain"] = domain_code
+        api_request_params["out_Domain"] = domain_code
+
+    """
     if domain_param == "in_Domain":
         params["in_Domain"] = domain_code
     elif domain_param == "outBiddingZone_Domain":
@@ -232,44 +267,29 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> str:
     elif isinstance(domain_param, tuple):
         params["in_Domain"] = domain_code
         params["out_Domain"] = domain_code
+    """
 
-    params.update({
-        "periodStart": entsoe_api_params["periodStart"],
-        "periodEnd": entsoe_api_params["periodEnd"]
-    })
-
-    http_hook = HttpHook(method='GET', http_conn_id="ENTSOE")
-    conn = http_hook.get_connection("ENTSOE")
-    api_key = conn.password
-    params["securityToken"] = api_key
-
-    base_url = conn.host.rstrip("/")
     log_str = (
-        f"{var_name} {task_run_metadata['country_name']} "
-        f"({domain_code}) for period: {params['periodStart']} - {params['periodEnd']}"
+        f"{task_run_metadata['var_name']} {task_run_metadata['country_name']} "
+        f"({entsoe_api_params['in_Domain']}) for period: {entsoe_api_params['periodStart']} - {entsoe_api_params['periodEnd']}"
     )
 
     try:
-        logger.info(f"Fetching data for {log_str}")
-        session = http_hook.get_conn()
-        response = session.get(base_url, params=params, timeout=60)
+        response = _get_entsoe_response(log_str, api_request_params)
+        logger.info(f"Successfully extracted data for  {log_str}")
 
-        response.raise_for_status()
-        response.encoding = 'utf-8'
-
-        logger.info(f"Successfully extracted data for {log_str}")
         return {
             'xml_content': response.text,
             'status_code': response.status_code,
             'content_type': response.headers.get('Content-Type'),
-            'var_name': var_name,
+            "var_name": task_run_metadata["var_name"],
             'country_name': task_run_metadata['country_name'],
             'country_code': task_run_metadata['country_code'],
-            'area_code': domain_code,
-            'period_start': params['periodStart'],
-            'period_end': params['periodEnd'],
+            'area_code': domain_code, #TODO: Róźnica !!!
+            "period_start": entsoe_api_params["periodStart"],
+            "period_end": entsoe_api_params["periodEnd"],
             'logical_date_processed': context['logical_date'].isoformat(),
-            'request_params': json.dumps(params),
+            "request_params": json.dumps(api_request_params), #TODO: Sprawdzić co to
             'task_run_metadata': task_run_metadata
         }
 
@@ -280,9 +300,8 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> str:
         logger.error(f"Error extracting data for {log_str}: {str(e)}")
         raise
 
-@task
+@task  
 def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> int:
-
     if not extracted_data or 'xml_content' not in extracted_data:
         logger.warning(f"Skipping storage of raw XML due to missing content for params: {extracted_data.get('request_params')}")
         return -1
@@ -315,9 +334,8 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
         logger.error(f"Error storing raw XML for {extracted_data.get('country_name')}: {e}")
         raise
 
-@task(task_id='parse_xml')
+@task(task_id='parse_xml')  # TODO: Do Sprawdzenia
 def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
-
     xml_data = extracted_data['xml_content']
     country_name = extracted_data['country_name']
     area_code = extracted_data['area_code']
@@ -476,7 +494,6 @@ def add_timestamp_column(df: pd.DataFrame) -> pd.DataFrame:
 
 @task(task_id='add_timestamp_elements')
 def add_timestamp_elements(df: pd.DataFrame) -> pd.DataFrame:
-
     if df.empty or 'timestamp' not in df.columns or df['timestamp'].isnull().all():
         logger.info("Skipping timestamp element addition for empty or invalid DataFrame.")
 
@@ -507,60 +524,49 @@ def zip_df_and_params(dfs: list, params: list) -> list[dict]:
 def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]):
     return {"df": df, "params": task_param}
 
-@task(task_id='load_to_staging_table')
-def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
+def _create_table_columns(df):
+    create_table_columns = []
+    for col_name, dtype in df.dtypes.items():
+        pg_type = "TEXT"  # Default
+        if "int" in str(dtype).lower():
+            pg_type = "INTEGER"
+        elif "float" in str(dtype).lower():
+            pg_type = "NUMERIC"
+        elif "datetime" in str(dtype).lower():
+            pg_type = "TIMESTAMP WITH TIME ZONE"
+        create_table_columns.append(f'"{col_name}" {pg_type}')
+    return create_table_columns
 
+@task(task_id='load_to_staging_table')
+def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Union[Dict[str, Any], str]:
     df = df_and_params['df']
     task_param = df_and_params['params']
 
-    '''if df.empty:
-        logger.info(f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty.")
-        #return f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['periodStart']}"
-        return f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}"'''
-
+    random_number = random.randint(0, 100000)
     if df.empty:
-        return {
-            "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
-            "var_name": task_param["task_run_metadata"]["var_name"]#,
-            #"table": task_param["task_run_metadata"]["table"]
-        }
-
+        logger.info(f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty.")
+        return f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['periodStart']}"
 
     df = df.drop("Position", axis=1)
     df['quantity'] = pd.to_numeric(df.loc[:, 'quantity'], errors='coerce').astype(float)
-    
-    dag_run_id_safe = context['dag_run'].run_id.replace(':', '_').replace('+', '_').replace('.', '_').replace('-', '_')
-    #staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{dag_run_id_safe}"[:63] # Max PG table name length
-    area_code_safe = task_param['task_run_metadata'].get('area_code', 'UNKNOWN').replace('-', '')
-    staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{area_code_safe}_{task_param['entsoe_api_params']['periodStart']}_{dag_run_id_safe}"[:63]
-    
-    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table) # Sanitize
+    cols = _create_table_columns(df)
 
+    staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
 
-    logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
+    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)  # Sanitize
+
+    staging_table = staging_table[:63]  # Optional safeguard
+
+    logger.info(
+        f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}"
+    )
     pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    
-    create_table_columns = []
-    for col_name, dtype in df.dtypes.items():
-        pg_type = "TEXT"
-        if "int" in str(dtype).lower(): pg_type = "INTEGER"
-        elif "float" in str(dtype).lower(): pg_type = "NUMERIC"
-        elif "datetime" in str(dtype).lower(): pg_type = "TIMESTAMP WITH TIME ZONE"
-        create_table_columns.append(f'"{col_name}" {pg_type}')
 
-    create_stmt = f"""CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {', '.join(create_table_columns)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"""
+    create_stmt = f"""CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"""
     drop_stmt = f"""DROP TABLE IF EXISTS airflow_data."{staging_table}";"""
     pg_hook.run(drop_stmt)
+
     pg_hook.run(create_stmt)
-
-
-    #+++
-    logger.info(
-        f"[load_to_staging_table] final_table={task_param['task_run_metadata']['final_table_name']}, "
-        f"var_name={task_param['task_run_metadata']['var_name']}, "
-        f"staging_table={staging_table}, records={len(df)}"
-    )
-
 
     csv_buffer = StringIO()
     df.to_csv(csv_buffer, index=False, header=True)
@@ -577,7 +583,6 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> str:
     return {
         "staging_table_name": staging_table, 
         "var_name": task_param["task_run_metadata"]["var_name"],
-        "final_table_name": task_param["task_run_metadata"]["final_table_name"]
     }
 
 def _create_prod_table(variable_name):
@@ -601,20 +606,14 @@ def _create_prod_table(variable_name):
         UNIQUE (timestamp, variable, area_code)
         );
         """
-        #UNIQUE (timestamp, variable));
+        #UNIQUE (timestamp, variable)); TODO: Zmienione
     pg_hook.run(create_prod_sql)
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
 
 @task(task_id='merge_to_production_table')
 def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
-    
     staging_table_name = staging_dict['staging_table_name']
-    
-    #production_table_name = staging_dict["var_name"].replace(" ", "_").lower()
-    production_table_name = staging_dict["final_table_name"] #+++
-
-    logger.info(f"[MERGE] Merging {staging_table_name} → {production_table_name}") ##
-
+    production_table_name = staging_dict["var_name"].replace(" ", "_").lower()
     if staging_table_name.startswith("empty_staging_"):
         logger.info(f"Skipping merge for empty/failed staging data: {staging_table_name}")
         return f"Skipped merge for {staging_table_name}"
@@ -647,11 +646,6 @@ def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
             quantity = EXCLUDED.quantity,
             processed_at = CURRENT_TIMESTAMP;
         """
-
-    logger.info(
-        f"[merge_data_to_production] Merging from staging={staging_table_name} → final_table={production_table_name} "
-        f"for var_name={staging_dict.get('var_name')}"
-    )
     
     try:
         pg_hook.run(merge_sql)
@@ -704,7 +698,7 @@ def entsoe_new_etl_pipeline():
 
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
 
-    timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs) #
+    timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
 
     enriched_dfs = add_timestamp_elements.expand(df=timestamped_dfs)
 
@@ -732,4 +726,4 @@ def entsoe_new_etl_pipeline():
     parsed_dfs.set_upstream(stored_xml_ids)
 
 
-#entsoe_new_etl_dag = entsoe_new_etl_pipeline()
+entsoe_new_etl_dag = entsoe_new_etl_pipeline()

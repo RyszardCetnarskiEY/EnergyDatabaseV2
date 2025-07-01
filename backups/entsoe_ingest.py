@@ -121,5 +121,5 @@ def entsoe_dynamic_etl_pipeline():
     parsed_dfs.set_upstream(stored_xml_ids)
 
 
-entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
+#entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
 
