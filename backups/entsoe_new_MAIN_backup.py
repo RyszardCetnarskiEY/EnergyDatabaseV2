@@ -18,69 +18,47 @@ from airflow.operators.empty import EmptyOperator
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-ENTSOE_VARIABLES_all = {
-    "Energy Prices fixing I": {
-        "table": "energy_prices_day_ahead_fixing_I_MAIN",
+
+
+ENTSOE_VARIABLES = {
+    "Energy Prices Day Ahead Fixing I MAIN": {
+        "table": "energy_prices_day_ahead_fixing_i_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" : 'PT60M'},
-        "params" : {"documentType": "A44", "contract_MarketAgreement.type": "A01"}
+        "params" : {"documentType": "A44"}
     },
 
-    "Actual Total Load": {
-        "table": "actual_total_load_MAIN",
+    "Actual Total Load MAIN": {
+        "table": "actual_total_load_main",
         "AreaType": "country_domain",
         'xml_parsing_info': {"column_name": 'ns:mRID', "resolution": 'PT15M'},
         "params": {"documentType": "A65", "processType": "A16"}
     },
 
-    "Day-ahead Total Load Forecast": {
-        "table": "total_load_forecast_day_ahead_MAIN",
+    "Total Load Forecast Day Ahead MAIN": {
+        "table": "total_load_forecast_day_ahead_main",
         "AreaType": "country_domain",
         'xml_parsing_info': {"column_name": 'ns:mRID', "resolution": 'PT15M'},
         "params": {"documentType": "A65", "processType": "A01"}
     },
 
-    "Generation Forecasts for Wind and Solar": {
-        "table": "generation_forecasts_wind_solar_MAIN",
+    "Generation Forecasts for Wind and Solar MAIN": {
+        "table": "generation_forecasts_for_wind_and_solar_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:MktPSRType/ns:psrType', "resolution" : 'PT15M'},
         "params" : {"documentType": "A69", "processType": "A01"}
     },
 
-    "Actual Generation per Generation Unit": {
-        "table": "actual_generation_per_production_unit_MAIN",
-        "AreaType" : "bidding_zones",
-        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
-        "params" : {"documentType": "A73", "processType": "A16"}
-    },
-
-    "Generation Forecasts - Day ahead": {
-        "table": "generation_forecasts_day_ahead_MAIN",
-        "AreaType" : "country_domain",
-        'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
-        "params" : {"documentType": "A71", "processType": "A01"}
-    }
-}
-
-ENTSOE_VARIABLES = {
-    "Generation Forecasts Wind and Solar Main": {
-        "table": "generation_forecasts_wind_solar_main", 
-        "AreaType" : "country_domain",
-        'xml_parsing_info' : {"column_name" : 'ns:MktPSRType/ns:psrType', "resolution" : 'PT15M'},
-        "params" : {"documentType": "A69", "processType": "A01"}
-    },
-
-    "Actual Generation per Production Unit Main": {
+    "Actual Generation per Production Unit MAIN": {
         "table": "actual_generation_per_production_unit_main",
         "AreaType" : "bidding_zones",
         'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
         "params" : {"documentType": "A73", "processType": "A16"}
     },
 
-    "Generation Forecasts Day ahead Main": {
+    "Generation Forecasts Day Ahead MAIN": {
         "table": "generation_forecasts_day_ahead_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
@@ -88,14 +66,6 @@ ENTSOE_VARIABLES = {
     }
 }
 
-ENTSOE_VARIABLES_TEST1 = {
-    "Actual Generation per Production Unit Main": {
-        "table": "actual_generation_per_production_unit_main",
-        "AreaType" : "bidding_zones",
-        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
-        "params" : {"documentType": "A73", "processType": "A16"}
-    }
-}
 
 POSTGRES_CONN_ID = "postgres_azure_vm"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"
@@ -116,6 +86,24 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=2),
 }
+
+
+@task
+def create_log_table():
+    sql = """
+    CREATE TABLE IF NOT EXISTS airflow_data.entsoe_api_log (
+        id SERIAL PRIMARY KEY,
+        entity TEXT,
+        country TEXT,
+        tso TEXT,
+        business_date DATE,
+        result TEXT CHECK (result IN ('success', 'fail')),
+        message TEXT,
+        logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (entity, country, tso, business_date)
+    );
+    """
+    PostgresHook(postgres_conn_id=POSTGRES_CONN_ID).run(sql)
 
 @task(task_id='create_initial_tables_if_not_exist')
 def create_initial_tables(db_conn_id: str, raw_xml_table: str) -> dict:
@@ -227,7 +215,6 @@ def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     return "in_Domain"
 
 @task(task_id='extract_from_api')
-#def extract_from_api(task_param: Dict[str, Any], **context) -> str: #Poprawione
 def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     """
     Fetches data from the ENTSOE API for a given country and period.
@@ -235,14 +222,6 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     """
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
-
-    """ TODO: Ustalić co to bo używamy dalej
-    api_kwargs = {}
-    if task_run_metadata["var_name"] == "Energy Prices fixing I":
-        api_kwargs["out_Domain"] = entsoe_api_params["in_Domain"]
-
-    api_request_params = dict(entsoe_api_params, **api_kwargs)
-    """
 
     document_type = entsoe_api_params.get("documentType") #Poprawione
     process_type = entsoe_api_params.get("processType", "") #Poprawione
@@ -258,16 +237,6 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     elif isinstance(domain_param, tuple):
         api_request_params["in_Domain"] = domain_code
         api_request_params["out_Domain"] = domain_code
-
-    """
-    if domain_param == "in_Domain":
-        params["in_Domain"] = domain_code
-    elif domain_param == "outBiddingZone_Domain":
-        params["outBiddingZone_Domain"] = domain_code
-    elif isinstance(domain_param, tuple):
-        params["in_Domain"] = domain_code
-        params["out_Domain"] = domain_code
-    """
 
     log_str = (
         f"{task_run_metadata['var_name']} {task_run_metadata['country_name']} "
@@ -285,11 +254,11 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
             "var_name": task_run_metadata["var_name"],
             'country_name': task_run_metadata['country_name'],
             'country_code': task_run_metadata['country_code'],
-            'area_code': domain_code, #TODO: Róźnica !!!
+            'area_code': domain_code,
             "period_start": entsoe_api_params["periodStart"],
             "period_end": entsoe_api_params["periodEnd"],
             'logical_date_processed': context['logical_date'].isoformat(),
-            "request_params": json.dumps(api_request_params), #TODO: Sprawdzić co to
+            "request_params": json.dumps(api_request_params),
             'task_run_metadata': task_run_metadata
         }
 
@@ -334,7 +303,7 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
         logger.error(f"Error storing raw XML for {extracted_data.get('country_name')}: {e}")
         raise
 
-@task(task_id='parse_xml')  # TODO: Do Sprawdzenia
+@task(task_id='parse_xml')
 def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     xml_data = extracted_data['xml_content']
     country_name = extracted_data['country_name']
@@ -365,7 +334,7 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     for ts in root.findall('ns:TimeSeries', ns):
         name = ts.findtext(column_name, namespaces=ns)
 
-        if var_name == "Actual Generation per Production Unit Main":
+        if var_name == "Actual Generation per Production Unit MAIN":
             name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)
             registered_resource = ts.findtext('ns:registeredResource.mRID', namespaces=ns)
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
@@ -415,7 +384,7 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
                 except ValueError:
                     continue
 
-        if var_name == "Generation Forecasts Day ahead Main":
+        if var_name == "Generation Forecasts Day Ahead MAIN":
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
             in_zone = ts.findtext('ns:inBiddingZone_Domain.mRID', namespaces=ns)
             out_zone = ts.findtext('ns:outBiddingZone_Domain.mRID', namespaces=ns)
@@ -527,7 +496,7 @@ def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]):
 def _create_table_columns(df):
     create_table_columns = []
     for col_name, dtype in df.dtypes.items():
-        pg_type = "TEXT"  # Default
+        pg_type = "TEXT"
         if "int" in str(dtype).lower():
             pg_type = "INTEGER"
         elif "float" in str(dtype).lower():
@@ -553,9 +522,9 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Union[Dic
 
     staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
 
-    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)  # Sanitize
+    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)
 
-    staging_table = staging_table[:63]  # Optional safeguard
+    staging_table = staging_table[:63]
 
     logger.info(
         f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}"
@@ -666,6 +635,44 @@ def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str):
         except Exception as e:
             logger.error(f"Error dropping staging table {table_name}: {e}")
 
+@task
+def log_etl_result(task_param: Dict[str, Any], db_conn_id: str, execution_date=None):
+
+    entity = task_param["task_run_metadata"]["var_name"]
+    country = task_param["task_run_metadata"]["country_name"]
+    tso = task_param["task_run_metadata"]["area_code"]
+    business_date = execution_date.format("YYYY-MM-DD")
+
+    production_table_name = ENTSOE_VARIABLES[entity]["table"]
+
+    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+
+    try:
+        sql = f"""
+            SELECT COUNT(*) FROM airflow_data."{production_table_name}"
+            WHERE date_trunc('day', "timestamp") = %s AND area_code = %s;
+        """
+        count = pg_hook.get_first(sql, parameters=(business_date, tso))[0]
+        if count > 0:
+            result = "success"
+            message = f"Loaded {count} records to {production_table_name}"
+        else:
+            result = "fail"
+            message = "No records found in production table"
+    except Exception as e:
+        result = "fail"
+        message = f"Error checking production data: {str(e)}"
+
+    log_sql = """
+    INSERT INTO airflow_data.entsoe_api_log (entity, country, tso, business_date, result, message)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (entity, country, tso, business_date)
+    DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
+    """
+    pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
+
+
+
 
 @dag(
     dag_id='entsoe_new_etl_pipeline_final',
@@ -680,13 +687,16 @@ def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str):
 )
 def entsoe_new_etl_pipeline():
 
+    log_table_created = create_log_table()
+
     initial_setup = create_initial_tables(
         db_conn_id=POSTGRES_CONN_ID,
         raw_xml_table=RAW_XML_TABLE_NAME
     )
 
-    task_parameters = generate_run_parameters()
+    initial_setup.set_upstream(log_table_created)
 
+    task_parameters = generate_run_parameters()
     task_parameters.set_upstream(initial_setup)
 
     extracted_data = extract_from_api.expand(task_param=task_parameters)
@@ -697,6 +707,7 @@ def entsoe_new_etl_pipeline():
     ).expand(extracted_data=extracted_data)
 
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
+    parsed_dfs.set_upstream(stored_xml_ids)
 
     timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
 
@@ -723,7 +734,9 @@ def entsoe_new_etl_pipeline():
     
     cleanup_task.set_upstream(merged_results)
     
-    parsed_dfs.set_upstream(stored_xml_ids)
+    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(task_param=task_parameters)
+
+    log_result.set_upstream(merged_results)
 
 
 #entsoe_new_etl_dag = entsoe_new_etl_pipeline()

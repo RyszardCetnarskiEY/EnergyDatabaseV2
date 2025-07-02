@@ -4,7 +4,7 @@ POSTGRES_CONN_ID = "postgres_azure_vm"
 HTTP_CONN_ID = "PSE_API"
 HISTORICAL_START_DATE = datetime(2025, 6, 1)
 
-ENTITY_CONFIG_MAIN = {
+ENTITY_CONFIG = {
     "pomb-rbn": {
         "columns": [
             "ofc", "dtime", "period", "pofmax", "pofmin", "plofmax", "plofmin",
@@ -125,7 +125,7 @@ ENTITY_CONFIG_MAIN = {
     }
 }
 
-ENTITY_CONFIG = {
+ENTITY_CONFIG_2 = {
     "poeb-rbb": {
         "columns": [
             "ofp", "ofcd", "ofcg", "dtime", "period",

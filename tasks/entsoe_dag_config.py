@@ -1,41 +1,41 @@
 ENTSOE_VARIABLES = {
-    "Energy Prices fixing I": {
-        "table": "energy_prices_day_ahead_fixing_I_MAIN",
+    "Energy Prices Day Ahead Fixing I MAIN": {
+        "table": "energy_prices_day_ahead_fixing_i_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" : 'PT60M'},
-        "params" : {"documentType": "A44", "contract_MarketAgreement.type": "A01"}
+        "params" : {"documentType": "A44"}
     },
 
-    "Actual Total Load": {
-        "table": "actual_total_load_MAIN",
+    "Actual Total Load MAIN": {
+        "table": "actual_total_load_main",
         "AreaType": "country_domain",
         'xml_parsing_info': {"column_name": 'ns:mRID', "resolution": 'PT15M'},
         "params": {"documentType": "A65", "processType": "A16"}
     },
 
-    "Day-ahead Total Load Forecast": {
-        "table": "total_load_forecast_day_ahead_MAIN",
+    "Total Load Forecast Day Ahead MAIN": {
+        "table": "total_load_forecast_day_ahead_main",
         "AreaType": "country_domain",
         'xml_parsing_info': {"column_name": 'ns:mRID', "resolution": 'PT15M'},
         "params": {"documentType": "A65", "processType": "A01"}
     },
 
-    "Generation Forecasts for Wind and Solar": {
-        "table": "generation_forecasts_wind_solar_MAIN",
+    "Generation Forecasts for Wind and Solar MAIN": {
+        "table": "generation_forecasts_for_wind_and_solar_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:MktPSRType/ns:psrType', "resolution" : 'PT15M'},
         "params" : {"documentType": "A69", "processType": "A01"}
     },
 
-    "Actual Generation per Generation Unit": {
-        "table": "actual_generation_per_production_unit_MAIN",
+    "Actual Generation per Production Unit MAIN": {
+        "table": "actual_generation_per_production_unit_main",
         "AreaType" : "bidding_zones",
         'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
         "params" : {"documentType": "A73", "processType": "A16"}
     },
 
-    "Generation Forecasts - Day ahead": {
-        "table": "generation_forecasts_day_ahead_MAIN",
+    "Generation Forecasts Day Ahead MAIN": {
+        "table": "generation_forecasts_day_ahead_main",
         "AreaType" : "country_domain",
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
         "params" : {"documentType": "A71", "processType": "A01"}

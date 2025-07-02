@@ -13,10 +13,32 @@ import pandas as pd
 from airflow.decorators import task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 logger = logging.getLogger(__name__)
 POSTGRES_CONN_ID = "postgres_azure_vm"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing" # Changed name for clarity
 
+from tasks.entsoe_dag_config import ENTSOE_VARIABLES
+
+@task
+def create_log_table():
+    sql = """
+    CREATE TABLE IF NOT EXISTS airflow_data.entsoe_api_log (
+        id SERIAL PRIMARY KEY,
+        entity TEXT,
+        country TEXT,
+        tso TEXT,
+        business_date DATE,
+        result TEXT CHECK (result IN ('success', 'fail')),
+        message TEXT,
+        logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (entity, country, tso, business_date)
+    );
+    """
+    PostgresHook(postgres_conn_id=POSTGRES_CONN_ID).run(sql)
 
 def _create_table_columns(df):
     create_table_columns = []
@@ -182,3 +204,39 @@ def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str):
             logger.info(f"Dropped staging table: airflow_data.\"{table_name}\".")
         except Exception as e:
             logger.error(f"Error dropping staging table {table_name}: {e}")
+
+@task
+def log_etl_result(task_param: Dict[str, Any], db_conn_id: str, execution_date=None):
+
+    entity = task_param["task_run_metadata"]["var_name"]
+    country = task_param["task_run_metadata"]["country_name"]
+    tso = task_param["task_run_metadata"]["area_code"]
+    business_date = execution_date.format("YYYY-MM-DD")
+
+    production_table_name = ENTSOE_VARIABLES[entity]["table"]
+
+    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+
+    try:
+        sql = f"""
+            SELECT COUNT(*) FROM airflow_data."{production_table_name}"
+            WHERE date_trunc('day', "timestamp") = %s AND area_code = %s;
+        """
+        count = pg_hook.get_first(sql, parameters=(business_date, tso))[0]
+        if count > 0:
+            result = "success"
+            message = f"Loaded {count} records to {production_table_name}"
+        else:
+            result = "fail"
+            message = "No records found in production table"
+    except Exception as e:
+        result = "fail"
+        message = f"Error checking production data: {str(e)}"
+
+    log_sql = """
+    INSERT INTO airflow_data.entsoe_api_log (entity, country, tso, business_date, result, message)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (entity, country, tso, business_date)
+    DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
+    """
+    pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))

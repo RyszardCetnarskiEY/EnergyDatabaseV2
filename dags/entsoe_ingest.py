@@ -13,9 +13,9 @@ from io import StringIO
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.http.hooks.http import HttpHook
-from airflow.operators.empty import EmptyOperator # Not used in final version, but good to know
+from airflow.operators.empty import EmptyOperator
 from airflow.exceptions import AirflowException
-from airflow.utils.dates import days_ago # Alternative for start_date
+from airflow.utils.dates import days_ago
 
 # Add the project root directory to sys.path so imports work from dags/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,7 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tasks.entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
 from tasks.df_processing_tasks import add_timestamp_column, add_timestamp_elements, combine_df_and_params
 from tasks.entsoe_api_tasks import generate_run_parameters, extract_from_api
-from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables
+from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables, create_log_table, log_etl_result
 from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
@@ -62,13 +62,16 @@ print('TODO - move to taskGroup one day and share some tasks for other variables
 )
 def entsoe_dynamic_etl_pipeline():
 
+    log_table_created = create_log_table()
+
     initial_setup = create_initial_tables(
         db_conn_id=POSTGRES_CONN_ID,
         raw_xml_table=RAW_XML_TABLE_NAME
     )
 
-    task_parameters = generate_run_parameters()
+    initial_setup.set_upstream(log_table_created)
 
+    task_parameters = generate_run_parameters()
     task_parameters.set_upstream(initial_setup)
 
     extracted_data = extract_from_api.expand(task_param=task_parameters)
@@ -79,6 +82,7 @@ def entsoe_dynamic_etl_pipeline():
     ).expand(extracted_data=extracted_data)
 
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
+    parsed_dfs.set_upstream(stored_xml_ids)
 
     timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
 
@@ -105,8 +109,9 @@ def entsoe_dynamic_etl_pipeline():
     
     cleanup_task.set_upstream(merged_results)
     
-    parsed_dfs.set_upstream(stored_xml_ids)
+    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(task_param=task_parameters)
+
+    log_result.set_upstream(merged_results)
 
 
 entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
-

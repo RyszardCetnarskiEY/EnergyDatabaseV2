@@ -46,8 +46,7 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
         logger.error(f"Error storing raw XML for {extracted_data.get('country_name')}: {e}")
         raise
 
-
-@task(task_id='parse_xml')  # TODO: Do Sprawdzenia
+@task(task_id='parse_xml')
 def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     xml_data = extracted_data['xml_content']
     country_name = extracted_data['country_name']
@@ -78,7 +77,7 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     for ts in root.findall('ns:TimeSeries', ns):
         name = ts.findtext(column_name, namespaces=ns)
 
-        if var_name == "Actual Generation per Production Unit Main":
+        if var_name == "Actual Generation per Production Unit MAIN":
             name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)
             registered_resource = ts.findtext('ns:registeredResource.mRID', namespaces=ns)
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
@@ -128,7 +127,7 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
                 except ValueError:
                     continue
 
-        if var_name == "Generation Forecasts Day ahead Main":
+        if var_name == "Generation Forecasts Day Ahead MAIN":
             ts_id = ts.findtext('ns:mRID', namespaces=ns)
             in_zone = ts.findtext('ns:inBiddingZone_Domain.mRID', namespaces=ns)
             out_zone = ts.findtext('ns:outBiddingZone_Domain.mRID', namespaces=ns)
