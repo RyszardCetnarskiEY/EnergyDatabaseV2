@@ -23,7 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tasks.entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
 from tasks.df_processing_tasks import add_timestamp_column, add_timestamp_elements, combine_df_and_params
 from tasks.entsoe_api_tasks import generate_run_parameters, extract_from_api
-from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables, create_log_table, log_etl_result
+from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, create_initial_tables, cleanup_staging_tables, create_log_table, log_etl_result, filter_entities_to_run
 from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
@@ -71,8 +71,13 @@ def entsoe_dynamic_etl_pipeline():
 
     initial_setup.set_upstream(log_table_created)
 
-    task_parameters = generate_run_parameters()
-    task_parameters.set_upstream(initial_setup)
+    all_params = generate_run_parameters()
+    all_params.set_upstream(initial_setup)
+
+    task_parameters = filter_entities_to_run(
+        task_params=all_params,
+        db_conn_id=POSTGRES_CONN_ID
+    )
 
     extracted_data = extract_from_api.expand(task_param=task_parameters)
 

@@ -163,6 +163,35 @@ def generate_run_parameters(**context) -> List[Dict[str, str]]:
     logger.info(f"Generated {len(task_params)} parameter sets for data interval: {data_interval_start.to_date_string()} - {data_interval_end.to_date_string()}")
     return task_params
 
+@task
+def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=None) -> list:
+    pg = PostgresHook(postgres_conn_id=db_conn_id)
+    date = execution_date.format("YYYY-MM-DD")
+
+    filtered_params = []
+
+    for param in task_params:
+        entity = param["task_run_metadata"]["var_name"]
+        country = param["task_run_metadata"]["country_name"]
+        tso = param["task_run_metadata"]["area_code"]
+
+        result = pg.get_first("""
+            SELECT result, message FROM airflow_data.entsoe_api_log
+            WHERE entity = %s AND country = %s AND tso = %s AND business_date = %s
+            ORDER BY logged_at DESC LIMIT 1;
+        """, parameters=(entity, country, tso, date))
+
+        if not result:
+            filtered_params.append(param)  # brak wpisu – trzeba zaciągnąć
+        else:
+            status, message = result
+            if status == "fail":
+                filtered_params.append(param)  # spróbujemy ponownie
+            else:
+                logging.info(f"Pomijam {entity} - {country} - {tso} na {date}, bo już pobrane: {message}")
+
+    return filtered_params
+
 def _entsoe_http_connection_setup():
     http_hook = HttpHook(method="GET", http_conn_id="ENTSOE")
     conn = http_hook.get_connection("ENTSOE")
@@ -696,8 +725,13 @@ def entsoe_new_etl_pipeline():
 
     initial_setup.set_upstream(log_table_created)
 
-    task_parameters = generate_run_parameters()
-    task_parameters.set_upstream(initial_setup)
+    all_params = generate_run_parameters()
+    all_params.set_upstream(initial_setup)
+
+    task_parameters = filter_entities_to_run(
+        task_params=all_params,
+        db_conn_id=POSTGRES_CONN_ID
+    )
 
     extracted_data = extract_from_api.expand(task_param=task_parameters)
 

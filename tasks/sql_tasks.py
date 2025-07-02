@@ -240,3 +240,33 @@ def log_etl_result(task_param: Dict[str, Any], db_conn_id: str, execution_date=N
     DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
     """
     pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
+
+
+@task
+def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=None) -> list:
+    pg = PostgresHook(postgres_conn_id=db_conn_id)
+    date = execution_date.format("YYYY-MM-DD")
+
+    filtered_params = []
+
+    for param in task_params:
+        entity = param["task_run_metadata"]["var_name"]
+        country = param["task_run_metadata"]["country_name"]
+        tso = param["task_run_metadata"]["area_code"]
+
+        result = pg.get_first("""
+            SELECT result, message FROM airflow_data.entsoe_api_log
+            WHERE entity = %s AND country = %s AND tso = %s AND business_date = %s
+            ORDER BY logged_at DESC LIMIT 1;
+        """, parameters=(entity, country, tso, date))
+
+        if not result:
+            filtered_params.append(param)  # brak wpisu – trzeba zaciągnąć
+        else:
+            status, message = result
+            if status == "fail":
+                filtered_params.append(param)  # spróbujemy ponownie
+            else:
+                logging.info(f"Pomijam {entity} - {country} - {tso} na {date}, bo już pobrane: {message}")
+
+    return filtered_params
