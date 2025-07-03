@@ -27,8 +27,8 @@ from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, cre
 from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
-HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC")
-
+#HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC") Do PYTEST
+HISTORICAL_START_DATE = datetime(2025, 6, 15, tz="UTC")
 
 default_args = {
     'owner': 'airflow',
@@ -41,11 +41,30 @@ default_args = {
 
 @task
 def zip_df_and_params(dfs: list, params: list) -> list[dict]:
-    if len(dfs) != len(params):
-        raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
-    return [{"df": df_obj, "task_param": param} for df_obj, param in zip(dfs, params)]
+    try:
+        if len(dfs) != len(params):
+            raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
 
-
+        result = []
+        for df_dict, param in zip(dfs, params):
+            if isinstance(df_dict, dict):
+                result.append({
+                    "df": df_dict.get("df", pd.DataFrame()),
+                    "task_param": param
+                })
+            else:
+                result.append({
+                    "df": df_dict,
+                    "task_param": param
+                })
+        return result
+    except Exception as e:
+        logger.error(f"[zip_df_and_params] Error: {str(e)}")
+        return [{
+            "success": False,
+            "error": str(e),
+            "task_param": params[0] if params else {},
+        }]
 
 print('TODO - move to taskGroup one day and share some tasks for other variables, like generating units operation points')
 
@@ -89,9 +108,9 @@ def entsoe_dynamic_etl_pipeline():
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
     parsed_dfs.set_upstream(stored_xml_ids)
 
-    timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
+    timestamped_dfs = add_timestamp_column.expand(parsed_data=parsed_dfs)
 
-    enriched_dfs = add_timestamp_elements.expand(df=timestamped_dfs)
+    enriched_dfs = add_timestamp_elements.expand(parsed_data=timestamped_dfs)
 
     zipped_args = zip_df_and_params(
         dfs=enriched_dfs,
@@ -114,7 +133,7 @@ def entsoe_dynamic_etl_pipeline():
     
     cleanup_task.set_upstream(merged_results)
     
-    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(task_param=task_parameters)
+    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(merge_result=merged_results)
 
     log_result.set_upstream(merged_results)
 

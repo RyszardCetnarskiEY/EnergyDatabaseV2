@@ -76,7 +76,7 @@ COUNTRY_MAPPING = {
     "CZ": {"name": "Czech Republic", "country_domain": ["10YCZ-CEPS-----N"], "bidding_zones" : ["10YCZ-CEPS-----N"]},
 }
 
-HISTORICAL_START_DATE = datetime(2025, 6, 1, tz="UTC")
+HISTORICAL_START_DATE = datetime(2025, 6, 15, tz="UTC")
 
 default_args = {
     'owner': 'airflow',
@@ -252,13 +252,13 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
-    document_type = entsoe_api_params.get("documentType") #Poprawione
-    process_type = entsoe_api_params.get("processType", "") #Poprawione
+    document_type = entsoe_api_params.get("documentType")
+    process_type = entsoe_api_params.get("processType", "")
     domain_code = entsoe_api_params["in_Domain"]
 
     domain_param = get_domain_param_key(document_type, process_type)
 
-    api_request_params = entsoe_api_params.copy() #Dodane
+    api_request_params = entsoe_api_params.copy()
     if domain_param == "in_Domain":
         api_request_params["in_Domain"] = domain_code
     elif domain_param == "outBiddingZone_Domain":
@@ -274,48 +274,48 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
 
     try:
         response = _get_entsoe_response(log_str, api_request_params)
-        logger.info(f"Successfully extracted data for  {log_str}")
-
         return {
+            'success': True,
             'xml_content': response.text,
             'status_code': response.status_code,
             'content_type': response.headers.get('Content-Type'),
-            "var_name": task_run_metadata["var_name"],
+            'var_name': task_run_metadata['var_name'],
             'country_name': task_run_metadata['country_name'],
             'country_code': task_run_metadata['country_code'],
             'area_code': domain_code,
             "period_start": entsoe_api_params["periodStart"],
             "period_end": entsoe_api_params["periodEnd"],
             'logical_date_processed': context['logical_date'].isoformat(),
-            "request_params": json.dumps(api_request_params),
+            'request_params': json.dumps(api_request_params),
             'task_run_metadata': task_run_metadata
         }
-
-    except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error for {log_str}: {http_err} - Response: {response.text}")
-        raise AirflowException(f"API request failed for {log_str} with status {response.status_code}: {response.text}")
     except Exception as e:
-        logger.error(f"Error extracting data for {log_str}: {str(e)}")
-        raise
+        logger.error(f"[extract_from_api] {log_str}: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "task_param": task_param
+        }
 
-@task  
-def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> int:
-    if not extracted_data or 'xml_content' not in extracted_data:
-        logger.warning(f"Skipping storage of raw XML due to missing content for params: {extracted_data.get('request_params')}")
-        return -1
-    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
-    sql = f"""
-    INSERT INTO airflow_data."{table_name}"
-        (var_name, country_name, area_code, status_code, period_start, period_end, request_time, xml_data, request_parameters, content_type)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-    RETURNING id;"""
+@task(task_id='store_raw_xml')
+def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> Dict[str, Any]:
     try:
+        if not extracted_data.get("success", False):
+            return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
+
+        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+        sql = f"""
+        INSERT INTO airflow_data."{table_name}"
+            (var_name, country_name, area_code, status_code, period_start, period_end, request_time, xml_data, request_parameters, content_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        RETURNING id;"""
+
         inserted_id = pg_hook.run(
             sql,
             parameters=(
-                extracted_data['var_name'],
-                extracted_data['country_name'],
-                extracted_data['area_code'],
+                extracted_data['task_param']['task_run_metadata']['var_name'],
+                extracted_data['task_param']['task_run_metadata']['country_name'],
+                extracted_data['task_param']['task_run_metadata']['area_code'],
                 extracted_data['status_code'],
                 extracted_data['period_start'],
                 extracted_data['period_end'],
@@ -326,201 +326,228 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
             ),
             handler=lambda cursor: cursor.fetchone()[0]
         )
-        logger.info(f"Stored raw XML with ID {inserted_id} for request targeting {extracted_data.get('country_name')}")
-        return inserted_id
+        return {**extracted_data, "stored": True, "raw_id": inserted_id}
     except Exception as e:
-        logger.error(f"Error storing raw XML for {extracted_data.get('country_name')}: {e}")
-        raise
+        logger.error(f"[store_raw_xml] Error: {str(e)}")
+        return {**extracted_data, "success": False, "stored": False, "error": str(e)}
 
 @task(task_id='parse_xml')
 def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
-    xml_data = extracted_data['xml_content']
-    country_name = extracted_data['country_name']
-    area_code = extracted_data['area_code']
-
-    var_name = extracted_data['var_name']
-    column_name = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['column_name']
-    var_resolution = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['resolution']
-    request_params_str = extracted_data['request_params']
-
     try:
-        root = ET.fromstring(xml_data)
-    except ET.ParseError as e:
-        raise ValueError(f"Invalid XML format: {e}")
+        if not extracted_data.get("success", False):
+            return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api"}
 
-    import xml.dom.minidom
-    dom = xml.dom.minidom.parseString(xml_data)
-    pretty_xml = dom.toprettyxml(indent="  ")
+        xml_data = extracted_data['xml_content']
+        country_name = extracted_data['country_name']
+        area_code = extracted_data['area_code']
+        var_name = extracted_data['var_name']
+        column_name = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['column_name']
+        var_resolution = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['resolution']
+        request_params_str = extracted_data['request_params']
 
-    ns = {'ns': root.tag[root.tag.find("{")+1:root.tag.find("}")]} if "{" in root.tag else {}
-    print('ns: ', ns)
+        try:
+            root = ET.fromstring(xml_data)
+        except ET.ParseError as e:
+            raise ValueError(f"Invalid XML format: {e}")
 
-    max_pos = 0
+        import xml.dom.minidom
+        dom = xml.dom.minidom.parseString(xml_data)
+        pretty_xml = dom.toprettyxml(indent="  ")
 
-    results_df = pd.DataFrame(columns = ["Position", "Period_Start", "Period_End", "Resolution", "quantity", "variable"])
-    resolutions = [elem.text for elem in root.findall('.//ns:resolution', namespaces=ns)]
-    found_res = var_resolution in resolutions
-    for ts in root.findall('ns:TimeSeries', ns):
-        name = ts.findtext(column_name, namespaces=ns)
+        ns = {'ns': root.tag[root.tag.find("{")+1:root.tag.find("}")]} if "{" in root.tag else {}
+        print('ns: ', ns)
 
-        if var_name == "Actual Generation per Production Unit MAIN":
-            name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)
-            registered_resource = ts.findtext('ns:registeredResource.mRID', namespaces=ns)
-            ts_id = ts.findtext('ns:mRID', namespaces=ns)
+        max_pos = 0
 
-            if not name: name = "no_name"
-            if not registered_resource: registered_resource = "no_res"
-            if not ts_id: ts_id = "no_ts_id"
+        results_df = pd.DataFrame(columns = ["Position", "Period_Start", "Period_End", "Resolution", "quantity", "variable"])
+        resolutions = [elem.text for elem in root.findall('.//ns:resolution', namespaces=ns)]
+        found_res = var_resolution in resolutions
+        for ts in root.findall('ns:TimeSeries', ns):
+            name = ts.findtext(column_name, namespaces=ns)
 
-            value_label = f"{var_name}__{registered_resource}__{ts_id}"
-            ###value_label = registered_resource.strip()
+            if var_name == "Actual Generation per Production Unit MAIN":
+                name = ts.findtext('ns:MktPSRType/ns:PowerSystemResources/ns:mRID', namespaces=ns)
+                registered_resource = ts.findtext('ns:registeredResource.mRID', namespaces=ns)
+                ts_id = ts.findtext('ns:mRID', namespaces=ns)
 
-        if not name:
-            logger.warning(f"No mRID found for TimeSeries in {var_name} {country_name} ({area_code}) – skipping this block.")
-            continue
-        name = name.strip()
+                if not name: name = "no_name"
+                if not registered_resource: registered_resource = "no_res"
+                if not ts_id: ts_id = "no_ts_id"
 
-        period = ts.find('ns:Period', ns)
-        if period is None:
-            logger.error(f"No  data for {var_name} {country_name} {request_params_str}")
-            continue
-        resolution = period.findtext('.//ns:resolution', namespaces=ns)
+                value_label = f"{var_name}__{registered_resource}__{ts_id}"
 
-        if resolution != var_resolution:
-            if found_res:
-                # W pliku XML są też TimeSeries z żądaną rozdzielczością — omiń inne
+            if not name:
+                logger.warning(f"No mRID found for TimeSeries in {var_name} {country_name} ({area_code}) – skipping this block.")
                 continue
-            else:
-                # W XML nie ma TimeSeries z rozdzielczością z configa — przyjmij tę z XML
-                logger.warning(f"Resolution mismatch for {var_name} {country_name} ({area_code}). Using XML resolution '{resolution}' instead of config '{var_resolution}'")
-                var_resolution = resolution  # nadpisz dla bieżącego bloku
+            name = name.strip()
 
+            period = ts.find('ns:Period', ns)
+            if period is None:
+                logger.error(f"No  data for {var_name} {country_name} {request_params_str}")
+                continue
+            resolution = period.findtext('.//ns:resolution', namespaces=ns)
 
-        timeInterval = period.findall('ns:timeInterval', ns)
-        start = period.findtext('ns:timeInterval/ns:start', namespaces=ns)
-        end = period.findtext('ns:timeInterval/ns:end', namespaces=ns)
-
-        data = {}
-        for point in period.findall('ns:Point', ns):
-            pos = point.findtext('ns:position', namespaces=ns)
-            qty = point.findtext('ns:quantity', namespaces=ns) or point.findtext('ns:price.amount', namespaces=ns) # TODO Also pass this in the xml parsing params like name
-            if pos is not None and qty is not None:
-                try:
-                    pos = int(pos)
-                    qty = float(qty)
-                    data[pos] = qty
-                    max_pos = max(max_pos, pos)
-                except ValueError:
+            if resolution != var_resolution:
+                if found_res:
+                    # W pliku XML są też TimeSeries z żądaną rozdzielczością — omiń inne
                     continue
+                else:
+                    # W XML nie ma TimeSeries z rozdzielczością z configa — przyjmij tę z XML
+                    logger.warning(f"Resolution mismatch for {var_name} {country_name} ({area_code}). Using XML resolution '{resolution}' instead of config '{var_resolution}'")
+                    var_resolution = resolution  # nadpisz dla bieżącego bloku
 
-        if var_name == "Generation Forecasts Day Ahead MAIN":
-            ts_id = ts.findtext('ns:mRID', namespaces=ns)
-            in_zone = ts.findtext('ns:inBiddingZone_Domain.mRID', namespaces=ns)
-            out_zone = ts.findtext('ns:outBiddingZone_Domain.mRID', namespaces=ns)
 
-            if in_zone:
-                zone_type = "in"
-            elif out_zone:
-                zone_type = "out"
-            else:
-                zone_type = "unknown"
+            timeInterval = period.findall('ns:timeInterval', ns)
+            start = period.findtext('ns:timeInterval/ns:start', namespaces=ns)
+            end = period.findtext('ns:timeInterval/ns:end', namespaces=ns)
 
-            value_label = f"{var_name}__{zone_type}"
-            ###value_label = f"{var_name}"
+            data = {}
+            for point in period.findall('ns:Point', ns):
+                pos = point.findtext('ns:position', namespaces=ns)
+                qty = point.findtext('ns:quantity', namespaces=ns) or point.findtext('ns:price.amount', namespaces=ns) # TODO Also pass this in the xml parsing params like name
+                if pos is not None and qty is not None:
+                    try:
+                        pos = int(pos)
+                        qty = float(qty)
+                        data[pos] = qty
+                        max_pos = max(max_pos, pos)
+                    except ValueError:
+                        continue
 
-        else:
-            if column_name == 'ns:mRID':
-                value_label = f"{var_name}__{area_code}"
+            if var_name == "Generation Forecasts Day Ahead MAIN":
+                ts_id = ts.findtext('ns:mRID', namespaces=ns)
+                in_zone = ts.findtext('ns:inBiddingZone_Domain.mRID', namespaces=ns)
+                out_zone = ts.findtext('ns:outBiddingZone_Domain.mRID', namespaces=ns)
+
+                if in_zone:
+                    zone_type = "in"
+                elif out_zone:
+                    zone_type = "out"
+                else:
+                    zone_type = "unknown"
+
+                value_label = f"{var_name}__{zone_type}"
                 ###value_label = f"{var_name}"
+
             else:
-                value_label = f"{name}__{area_code}"
-                ###value_label = f"{var_name}"
+                if column_name == 'ns:mRID':
+                    value_label = f"{var_name}__{area_code}"
+                    ###value_label = f"{var_name}"
+                else:
+                    value_label = f"{name}__{area_code}"
+                    ###value_label = f"{var_name}"
 
 
-        partial_df = pd.DataFrame.from_dict(data, orient='index', columns=["quantity"])
-        partial_df.loc[:, "Period_Start"] = start
-        partial_df.loc[:, "Period_End"] = end
-        partial_df.loc[:, "Resolution"] = resolution
-        partial_df.loc[:, "variable"] = value_label
-        results_df = pd.concat([results_df, partial_df.reset_index(drop=False, names = 'Position' )], axis=0)
+            partial_df = pd.DataFrame.from_dict(data, orient='index', columns=["quantity"])
+            partial_df.loc[:, "Period_Start"] = start
+            partial_df.loc[:, "Period_End"] = end
+            partial_df.loc[:, "Resolution"] = resolution
+            partial_df.loc[:, "variable"] = value_label
+            results_df = pd.concat([results_df, partial_df.reset_index(drop=False, names = 'Position' )], axis=0)
 
-    if results_df.empty:
-        logger.warning(f"Parsed XML with TimeSeries structure but no data rows extracted for {var_name} {country_name} {area_code}.")
-        return pd.DataFrame()
+        if results_df.empty:
+            logger.warning(f"Parsed XML with TimeSeries structure but no data rows extracted for {var_name} {country_name} {area_code}.")
+            return pd.DataFrame()
 
-    results_df["area_code"] = area_code
+        results_df["area_code"] = area_code
 
-
-    logger.info(
-        f"[parse_xml] Parsed {len(results_df)} rows for var_name={var_name}, "
-        f"area_code={area_code}, table={extracted_data['task_run_metadata']['config_dict'].get('table')}"
-    )
-
-    return results_df
+        #return results_df
+        return {**extracted_data, "success": True, "df": results_df}
+    
+    except Exception as e:
+        logger.error(f"[parse_xml] Error: {str(e)}")
+        return {**extracted_data, "success": False, "error": str(e), "df": pd.DataFrame()}
 
 @task(task_id='add_timestamp')
-def add_timestamp_column(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds a timestamp column to the DataFrame based on Period_Start, Resolution, and index within TimeSeries_ID.
-    Assumes Resolution is always PT60M (1 hour) for simplicity.
-    """
+def add_timestamp_column(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        if not parsed_data.get("success", False):
+            return {**parsed_data, "success": False, "error": parsed_data.get("error", "Upstream error")}
 
-    if df.empty:
-        logger.info("Skipping timestamp addition for empty DataFrame.")
-        return df.assign(timestamp=pd.NaT)
+        df = parsed_data.get("df", pd.DataFrame())
+        if df.empty:
+            return {**parsed_data, "success": False, "error": "Empty DataFrame after parse_xml"}
 
-    df = df.copy()
-    if 'Period_Start' not in df.columns or df['Period_Start'].isnull().all():
-        logger.warning("Missing 'Period_Start' column or all values are null. Cannot add timestamp.")
-        df['timestamp'] = pd.NaT
-        return df.drop(columns=[col for col in ['Period_Start_dt', 'Resolution_td', 'Period_Start', 'Period_End'] if col in df.columns], errors='ignore')
+        df = df.copy()
+        df['Period_Start_dt'] = pd.to_datetime(df['Period_Start'], utc=True, errors='coerce')
 
-    df['Period_Start_dt'] = pd.to_datetime(df['Period_Start'], utc=True, errors='coerce')
+        def parse_resolution(res):
+            if res == 'PT60M': return timedelta(hours=1)
+            if res == 'PT30M': return timedelta(minutes=30)
+            if res == 'PT15M': return timedelta(minutes=15)
+            return pd.NaT
 
-    def parse_resolution(res):
-        if res == 'PT60M': return timedelta(hours=1)
-        if res == 'PT30M': return timedelta(minutes=30)
-        if res == 'PT15M': return timedelta(minutes=15)
-        logger.warning(f"Unsupported resolution: {res}, will result in NaT timestamp for affected rows.")
-        return pd.NaT
+        df['Resolution_td'] = df['Resolution'].apply(parse_resolution)
+        df['Position'] = pd.to_numeric(df['Position'], errors='coerce').fillna(0).astype(int)
+        df['timestamp'] = df['Period_Start_dt'] + (df['Position'] - 1) * df['Resolution_td']
+        df.drop(columns=['Period_Start_dt', 'Resolution_td', 'Period_Start', 'Period_End'], inplace=True, errors='ignore')
 
-    df['Resolution_td'] = df['Resolution'].apply(parse_resolution)
-    df['Position'] = pd.to_numeric(df['Position'], errors='coerce').fillna(0).astype(int)
-    df['timestamp'] = df['Period_Start_dt'] + (df['Position'] - 1) * df['Resolution_td']
-    df.drop(columns=['Period_Start_dt', 'Resolution_td', 'Period_Start', 'Period_End'], inplace=True, errors='ignore')
-    return df
+        return {**parsed_data, "df": df, "success": True}
+    except Exception as e:
+        logger.error(f"[add_timestamp_column] Error: {str(e)}")
+        return {**parsed_data, "success": False, "error": str(e)}
 
 @task(task_id='add_timestamp_elements')
-def add_timestamp_elements(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or 'timestamp' not in df.columns or df['timestamp'].isnull().all():
-        logger.info("Skipping timestamp element addition for empty or invalid DataFrame.")
+def add_timestamp_elements(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        if not parsed_data.get("success", False):
+            return {**parsed_data, "success": False}
 
-        for col in ['year', 'quarter', 'month', 'day', 'dayofweek', 'hour']:
-            if col not in df.columns: df[col] = pd.NA 
-        return df
+        df = parsed_data.get("df", pd.DataFrame())
+        if df.empty or "timestamp" not in df.columns:
+            return {**parsed_data, "success": False, "error": "Missing timestamp"}
 
-    df = df.copy()
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
-    
-    valid_timestamps = df['timestamp'].notna()
-    df.loc[valid_timestamps, 'year'] = df.loc[valid_timestamps, 'timestamp'].dt.year.astype(int)
-    df.loc[valid_timestamps, 'quarter'] = df.loc[valid_timestamps, 'timestamp'].dt.quarter.astype(int)
-    df.loc[valid_timestamps, 'month'] = df.loc[valid_timestamps, 'timestamp'].dt.month.astype(int)
-    df.loc[valid_timestamps, 'day'] = df.loc[valid_timestamps, 'timestamp'].dt.day.astype(int)
-    df.loc[valid_timestamps, 'dayofweek'] = df.loc[valid_timestamps, 'timestamp'].dt.dayofweek.astype(int) # Monday=0, Sunday=6
-    df.loc[valid_timestamps, 'hour'] = df.loc[valid_timestamps, 'timestamp'].dt.hour.astype(int)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+        valid = df['timestamp'].notna()
 
-    return df
+        df.loc[valid, 'year'] = df.loc[valid, 'timestamp'].dt.year.astype(int)
+        df.loc[valid, 'quarter'] = df.loc[valid, 'timestamp'].dt.quarter.astype(int)
+        df.loc[valid, 'month'] = df.loc[valid, 'timestamp'].dt.month.astype(int)
+        df.loc[valid, 'day'] = df.loc[valid, 'timestamp'].dt.day.astype(int)
+        df.loc[valid, 'dayofweek'] = df.loc[valid, 'timestamp'].dt.dayofweek.astype(int)
+        df.loc[valid, 'hour'] = df.loc[valid, 'timestamp'].dt.hour.astype(int)
+
+        return {**parsed_data, "df": df, "success": True}
+    except Exception as e:
+        logger.error(f"[add_timestamp_elements] Error: {str(e)}")
+        return {**parsed_data, "success": False, "error": str(e)}
 
 @task
 def zip_df_and_params(dfs: list, params: list) -> list[dict]:
-    if len(dfs) != len(params):
-        raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
-    return [{"df": df_obj, "task_param": param} for df_obj, param in zip(dfs, params)]
+    try:
+        if len(dfs) != len(params):
+            raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
+
+        result = []
+        for df_dict, param in zip(dfs, params):
+            if isinstance(df_dict, dict):
+                result.append({
+                    "df": df_dict.get("df", pd.DataFrame()),
+                    "task_param": param
+                })
+            else:
+                result.append({
+                    "df": df_dict,
+                    "task_param": param
+                })
+        return result
+    except Exception as e:
+        logger.error(f"[zip_df_and_params] Error: {str(e)}")
+        return [{
+            "success": False,
+            "error": str(e),
+            "task_param": params[0] if params else {},
+        }]
 
 @task
-def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]):
-    return {"df": df, "params": task_param}
+def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        #return {"df": df, "params": task_param, "success": not df.empty}
+        return {"df": df, "task_param": task_param, "success": not df.empty}
+    except Exception as e:
+        logger.error(f"[combine_df_and_params] Error: {str(e)}")
+        #return {"df": pd.DataFrame(), "params": task_param, "success": False, "error": str(e)}
+        return {"df": pd.DataFrame(), "task_param": task_param, "success": False, "error": str(e)}
 
 def _create_table_columns(df):
     create_table_columns = []
@@ -536,52 +563,75 @@ def _create_table_columns(df):
     return create_table_columns
 
 @task(task_id='load_to_staging_table')
-def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Union[Dict[str, Any], str]:
-    df = df_and_params['df']
-    task_param = df_and_params['params']
-
-    random_number = random.randint(0, 100000)
-    if df.empty:
-        logger.info(f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty.")
-        return f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['periodStart']}"
-
-    df = df.drop("Position", axis=1)
-    df['quantity'] = pd.to_numeric(df.loc[:, 'quantity'], errors='coerce').astype(float)
-    cols = _create_table_columns(df)
-
-    staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
-
-    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)
-
-    staging_table = staging_table[:63]
-
-    logger.info(
-        f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}"
-    )
-    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-
-    create_stmt = f"""CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);"""
-    drop_stmt = f"""DROP TABLE IF EXISTS airflow_data."{staging_table}";"""
-    pg_hook.run(drop_stmt)
-
-    pg_hook.run(create_stmt)
-
-    csv_buffer = StringIO()
-    df.to_csv(csv_buffer, index=False, header=True)
-    csv_buffer.seek(0)
-    conn = pg_hook.get_conn()
-    cur = conn.cursor()
-    sql_columns = ', '.join([f'"{col}"' for col in df.columns])
+def load_to_staging_table(df_and_params: Dict[str, Any], db_conn_id: str, **context) -> Dict[str, Any]:
     try:
-        cur.copy_expert(sql=f"""COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS ',' QUOTE '"'""", file=csv_buffer)
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-    return {
-        "staging_table_name": staging_table, 
-        "var_name": task_param["task_run_metadata"]["var_name"],
-    }
+        df = df_and_params['df']
+        #task_param = df_and_params['params']
+        task_param = df_and_params['task_param']
+
+        if df.empty:
+            message = f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty."
+            logger.info(message)
+            return {
+                "success": False,
+                "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
+                "var_name": task_param["task_run_metadata"]["var_name"],
+                "task_param": task_param,
+                "error": message
+            }
+
+        df = df.drop("Position", axis=1, errors="ignore")
+        df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').astype(float)
+        cols = _create_table_columns(df)
+
+        random_number = random.randint(0, 100000)
+        staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
+        staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)[:63]
+
+        logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
+
+        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+        drop_stmt = f'DROP TABLE IF EXISTS airflow_data."{staging_table}";'
+        create_stmt = f'CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);'
+
+        pg_hook.run(drop_stmt)
+        pg_hook.run(create_stmt)
+
+        csv_buffer = StringIO()
+        df.to_csv(csv_buffer, index=False, header=True)
+        csv_buffer.seek(0)
+
+        conn = pg_hook.get_conn()
+        cur = conn.cursor()
+        sql_columns = ', '.join([f'"{col}"' for col in df.columns])
+
+        try:
+            #cur.copy_expert(sql=f'COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS ',' QUOTE """"', file=csv_buffer)
+            cur.copy_expert(f'COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS \',\' QUOTE \'\"\'', csv_buffer)
+
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+        return {
+            "success": True,
+            "staging_table_name": staging_table,
+            "var_name": task_param["task_run_metadata"]["var_name"],
+            "task_param": task_param
+        }
+
+    except Exception as e:
+        logger.error(f"[load_to_staging_table] Error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "staging_table_name": "",
+            #"var_name": df_and_params['params']['task_run_metadata']['var_name'],
+            #"task_param": df_and_params['params']
+            "var_name": df_and_params['task_param']['task_run_metadata']['var_name'],
+            "task_param": df_and_params['task_param']
+        }
 
 def _create_prod_table(variable_name):
 
@@ -609,98 +659,143 @@ def _create_prod_table(variable_name):
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
 
 @task(task_id='merge_to_production_table')
-def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str):
-    staging_table_name = staging_dict['staging_table_name']
-    production_table_name = staging_dict["var_name"].replace(" ", "_").lower()
-    if staging_table_name.startswith("empty_staging_"):
-        logger.info(f"Skipping merge for empty/failed staging data: {staging_table_name}")
-        return f"Skipped merge for {staging_table_name}"
-
-    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-
-    _create_prod_table(production_table_name)
-
-    merge_sql = f"""
-        INSERT INTO airflow_data."{production_table_name}" (
-            "timestamp", "resolution", "year", "quarter", "month", "day",
-            dayofweek, hour, area_code, variable, quantity
-        )
-        SELECT 
-            "timestamp", "Resolution", "year", "quarter", "month", "day",
-            dayofweek, hour, area_code, variable, quantity
-        FROM airflow_data."{staging_table_name}"
-        WHERE timestamp IS NOT NULL AND variable IS NOT NULL
-        ON CONFLICT (timestamp, variable, area_code) DO UPDATE SET
-            "timestamp" = EXCLUDED."timestamp",
-            "resolution" = EXCLUDED."resolution",
-            year = EXCLUDED.year,
-            quarter = EXCLUDED.quarter,
-            month = EXCLUDED.month,
-            day = EXCLUDED.day,
-            dayofweek = EXCLUDED.dayofweek,
-            hour = EXCLUDED.hour,
-            area_code = EXCLUDED.area_code,
-            variable = EXCLUDED.variable,
-            quantity = EXCLUDED.quantity,
-            processed_at = CURRENT_TIMESTAMP;
-        """
-    
+def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
     try:
+        staging_table_name = staging_dict.get('staging_table_name', '')
+        task_param = staging_dict.get('task_param', {})
+        var_name = staging_dict.get('var_name', '')
+
+        production_table_name = var_name.replace(" ", "_").lower()
+
+        if staging_table_name.startswith("empty_staging_") or not staging_dict.get("success", True):
+            message = f"Skipping merge for empty/failed staging data: {staging_table_name}"
+            logger.info(message)
+            return {
+                "success": False,
+                "error": message,
+                "staging_table_name": staging_table_name,
+                "production_table_name": production_table_name,
+                "task_param": task_param
+            }
+
+        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+        _create_prod_table(production_table_name)
+
+        merge_sql = f'''
+            INSERT INTO airflow_data."{production_table_name}" (
+                "timestamp", "resolution", "year", "quarter", "month", "day",
+                dayofweek, hour, area_code, variable, quantity
+            )
+            SELECT 
+                "timestamp", "Resolution", "year", "quarter", "month", "day",
+                dayofweek, hour, area_code, variable, quantity
+            FROM airflow_data."{staging_table_name}"
+            WHERE timestamp IS NOT NULL AND variable IS NOT NULL
+            ON CONFLICT (timestamp, variable, area_code) DO UPDATE SET
+                "timestamp" = EXCLUDED."timestamp",
+                "resolution" = EXCLUDED."resolution",
+                year = EXCLUDED.year,
+                quarter = EXCLUDED.quarter,
+                month = EXCLUDED.month,
+                day = EXCLUDED.day,
+                dayofweek = EXCLUDED.dayofweek,
+                hour = EXCLUDED.hour,
+                area_code = EXCLUDED.area_code,
+                variable = EXCLUDED.variable,
+                quantity = EXCLUDED.quantity,
+                processed_at = CURRENT_TIMESTAMP;
+        '''
+
         pg_hook.run(merge_sql)
         logger.info(f"Successfully merged data from airflow_data.\"{staging_table_name}\" to airflow_data.\"{production_table_name}\".")
+        return {
+            "success": True,
+            "staging_table_name": staging_table_name,
+            "production_table_name": production_table_name,
+            "task_param": task_param
+        }
+
     except Exception as e:
-        logger.error(f"Error merging data from {staging_table_name} to {production_table_name}: {e}")
-        raise
-    return f"Merged {staging_table_name}"
+        logger.error(f"[merge_data_to_production] Error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "staging_table_name": staging_dict.get('staging_table_name', ''),
+            "production_table_name": staging_dict.get('var_name', '').replace(" ", "_").lower(),
+            "task_param": staging_dict.get('task_param', {})
+        }
 
 @task
-def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str):
-    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-    table_name = staging_dict['staging_table_name']
-    if table_name and not table_name.startswith("empty_staging_"):
-        try:
+def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
+    try:
+        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+        table_name = staging_dict.get('staging_table_name', '')
+
+        if table_name and not table_name.startswith("empty_staging_"):
             pg_hook.run(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
             logger.info(f"Dropped staging table: airflow_data.\"{table_name}\".")
-        except Exception as e:
-            logger.error(f"Error dropping staging table {table_name}: {e}")
+
+        return {
+            "success": True,
+            "task_param": staging_dict.get("task_param", {}),
+            "staging_table_name": table_name
+        }
+
+    except Exception as e:
+        logger.error(f"[cleanup_staging_tables] Error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "task_param": staging_dict.get("task_param", {}),
+            "staging_table_name": staging_dict.get("staging_table_name", "")
+        }
 
 @task
-def log_etl_result(task_param: Dict[str, Any], db_conn_id: str, execution_date=None):
+def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date=None) -> Dict[str, Any]:
+    task_param = merge_result.get("task_param", {})
+    success = merge_result.get("success", False)
+    error = merge_result.get("error", "")
+    production_table_name = merge_result.get("production_table_name", "")
 
-    entity = task_param["task_run_metadata"]["var_name"]
-    country = task_param["task_run_metadata"]["country_name"]
-    tso = task_param["task_run_metadata"]["area_code"]
-    business_date = execution_date.format("YYYY-MM-DD")
-
-    production_table_name = ENTSOE_VARIABLES[entity]["table"]
+    entity = task_param.get("task_run_metadata", {}).get("var_name")
+    country = task_param.get("task_run_metadata", {}).get("country_name")
+    tso = task_param.get("task_run_metadata", {}).get("area_code")
+    business_date = execution_date.format("YYYY-MM-DD") if execution_date else None
 
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
 
-    try:
-        sql = f"""
-            SELECT COUNT(*) FROM airflow_data."{production_table_name}"
-            WHERE date_trunc('day', "timestamp") = %s AND area_code = %s;
-        """
-        count = pg_hook.get_first(sql, parameters=(business_date, tso))[0]
-        if count > 0:
-            result = "success"
-            message = f"Loaded {count} records to {production_table_name}"
-        else:
-            result = "fail"
-            message = "No records found in production table"
-    except Exception as e:
+    if not success:
         result = "fail"
-        message = f"Error checking production data: {str(e)}"
+        message = error or f"Unknown error for {entity} on {business_date}"
+    else:
+        try:
+            sql = f'''
+                SELECT COUNT(*) FROM airflow_data."{production_table_name}"
+                WHERE date_trunc('day', "timestamp") = %s AND area_code = %s;
+            '''
+            count = pg_hook.get_first(sql, parameters=(business_date, tso))[0]
+            if count > 0:
+                result = "success"
+                message = f"Loaded {count} records to {production_table_name}"
+            else:
+                result = "fail"
+                message = "No records found in production table"
+        except Exception as e:
+            result = "fail"
+            message = f"Error checking production data: {str(e)}"
 
-    log_sql = """
+    log_sql = '''
     INSERT INTO airflow_data.entsoe_api_log (entity, country, tso, business_date, result, message)
     VALUES (%s, %s, %s, %s, %s, %s)
     ON CONFLICT (entity, country, tso, business_date)
     DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
-    """
-    pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
-
-
+    '''
+    try:
+        pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
+        return {"success": True, "result": result, "message": message, "task_param": task_param}
+    except Exception as e:
+        logger.error(f"[log_etl_result] Error logging to entsoe_api_log: {str(e)}")
+        return {"success": False, "error": str(e), "task_param": task_param, "message": message}
 
 
 @dag(
@@ -743,9 +838,11 @@ def entsoe_new_etl_pipeline():
     parsed_dfs = parse_xml.expand(extracted_data=extracted_data)
     parsed_dfs.set_upstream(stored_xml_ids)
 
-    timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
+    #timestamped_dfs = add_timestamp_column.expand(df=parsed_dfs)
+    timestamped_dfs = add_timestamp_column.expand(parsed_data=parsed_dfs)
 
-    enriched_dfs = add_timestamp_elements.expand(df=timestamped_dfs)
+    #enriched_dfs = add_timestamp_elements.expand(df=timestamped_dfs)
+    enriched_dfs = add_timestamp_elements.expand(parsed_data=timestamped_dfs)
 
     zipped_args = zip_df_and_params(
         dfs=enriched_dfs,
@@ -768,7 +865,7 @@ def entsoe_new_etl_pipeline():
     
     cleanup_task.set_upstream(merged_results)
     
-    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(task_param=task_parameters)
+    log_result = log_etl_result.partial(db_conn_id=POSTGRES_CONN_ID).expand(merge_result=merged_results)
 
     log_result.set_upstream(merged_results)
 

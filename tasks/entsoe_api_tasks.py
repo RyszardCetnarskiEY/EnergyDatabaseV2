@@ -106,7 +106,7 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
-    document_type = entsoe_api_params.get("documentType") 
+    document_type = entsoe_api_params.get("documentType")
     process_type = entsoe_api_params.get("processType", "")
     domain_code = entsoe_api_params["in_Domain"]
 
@@ -121,16 +121,6 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
         api_request_params["in_Domain"] = domain_code
         api_request_params["out_Domain"] = domain_code
 
-    """
-    if domain_param == "in_Domain":
-        params["in_Domain"] = domain_code
-    elif domain_param == "outBiddingZone_Domain":
-        params["outBiddingZone_Domain"] = domain_code
-    elif isinstance(domain_param, tuple):
-        params["in_Domain"] = domain_code
-        params["out_Domain"] = domain_code
-    """
-
     log_str = (
         f"{task_run_metadata['var_name']} {task_run_metadata['country_name']} "
         f"({entsoe_api_params['in_Domain']}) for period: {entsoe_api_params['periodStart']} - {entsoe_api_params['periodEnd']}"
@@ -138,29 +128,28 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
 
     try:
         response = _get_entsoe_response(log_str, api_request_params)
-        logger.info(f"Successfully extracted data for  {log_str}")
-
         return {
+            'success': True,
             'xml_content': response.text,
             'status_code': response.status_code,
             'content_type': response.headers.get('Content-Type'),
-            "var_name": task_run_metadata["var_name"],
+            'var_name': task_run_metadata['var_name'],
             'country_name': task_run_metadata['country_name'],
             'country_code': task_run_metadata['country_code'],
             'area_code': domain_code,
             "period_start": entsoe_api_params["periodStart"],
             "period_end": entsoe_api_params["periodEnd"],
             'logical_date_processed': context['logical_date'].isoformat(),
-            "request_params": json.dumps(api_request_params),
+            'request_params': json.dumps(api_request_params),
             'task_run_metadata': task_run_metadata
         }
-
-    except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error for {log_str}: {http_err} - Response: {response.text}")
-        raise AirflowException(f"API request failed for {log_str} with status {response.status_code}: {response.text}")
     except Exception as e:
-        logger.error(f"Error extracting data for {log_str}: {str(e)}")
-        raise
+        logger.error(f"[extract_from_api] {log_str}: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "task_param": task_param
+        }
 
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
