@@ -28,7 +28,7 @@ from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
 #HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC") Do PYTEST
-HISTORICAL_START_DATE = datetime(2025, 6, 15, tz="UTC")
+HISTORICAL_START_DATE = datetime(2024, 1, 1, tz="UTC")
 
 default_args = {
     'owner': 'airflow',
