@@ -1,0 +1,21 @@
+{
+  "ENTSOE": {
+    "conn_type": "http",
+    "host": "web-api.tp.entsoe.eu",
+    "schema": "https",
+    "extra": "{\"securityToken\": \"c699592f-3e3e-411d-ad44-7df3696f4a4a\", \"endpoint\": \"/api\"}"
+  },
+  "PSE_API": {
+    "conn_type": "http",
+    "host": "api.raporty.pse.pl",
+    "schema": "https"
+  },
+  "postgres_azure_vm": {
+    "conn_type": "postgres",
+    "host": "74.248.184.56",
+    "port": 443,
+    "login": "ryszardcetnarski",
+    "password": "EY2025",
+    "schema": "energy_data_sources"
+  }
+}
