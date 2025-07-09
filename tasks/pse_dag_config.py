@@ -2,9 +2,9 @@ from datetime import datetime
 
 POSTGRES_CONN_ID = "postgres_azure_vm"
 HTTP_CONN_ID = "PSE_API"
-HISTORICAL_START_DATE = datetime(2025, 6, 1)
+HISTORICAL_START_DATE = datetime(2024, 6, 14)
 
-ENTITY_CONFIG_all = {
+ENTITY_CONFIG = {
     "pomb-rbn": {
         "columns": [
             "ofc", "dtime", "period", "pofmax", "pofmin", "plofmax", "plofmin",
@@ -125,7 +125,7 @@ ENTITY_CONFIG_all = {
     }
 }
 
-ENTITY_CONFIG = {
+ENTITY_CONFIG_test = {
     "eb-rozl": {
         "columns": [
             "dtime", "period", "eb_d_pp", "eb_w_pp", "dtime_utc", "period_utc",
