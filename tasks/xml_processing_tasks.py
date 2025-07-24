@@ -16,7 +16,8 @@ RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"  # Changed name for clarity
 def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> Dict[str, Any]:
     try:
         if not extracted_data.get("success", False):
-            return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
+            #return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
+            return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed"), "df": pd.DataFrame()}
 
         pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
         sql = f"""
@@ -41,10 +42,12 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
             ),
             handler=lambda cursor: cursor.fetchone()[0]
         )
-        return {**extracted_data, "stored": True, "raw_id": inserted_id}
+        #return {**extracted_data, "stored": True, "raw_id": inserted_id}
+        return {**extracted_data, "stored": True, "raw_id": inserted_id, "df": pd.DataFrame()}
     except Exception as e:
         logger.error(f"[store_raw_xml] Error: {str(e)}")
-        return {**extracted_data, "success": False, "stored": False, "error": str(e)}
+        #return {**extracted_data, "success": False, "stored": False, "error": str(e)}
+        return {**extracted_data, "success": False, "stored": False, "error": str(e), "df": pd.DataFrame()}
 
 def handle_actual_generation_per_production_unit(ts, var_name, ns):
     # Obsługuje przypadek "Actual Generation per Production Unit MAIN"
@@ -79,7 +82,8 @@ def handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_co
 def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
     try:
         if not extracted_data.get("success", False):
-            return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api"}
+            #return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api"}
+            return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api", "df": pd.DataFrame()}
 
         xml_data = extracted_data['xml_content']
         country_name = extracted_data['country_name']
@@ -163,7 +167,8 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
 
         if results_df.empty:
             logger.warning(f"Parsed XML with TimeSeries structure but no data rows extracted for {var_name} {country_name} {area_code}.")
-            return pd.DataFrame()
+            #return pd.DataFrame()
+            return {**extracted_data, "success": False, "error": "No data extracted", "df": pd.DataFrame()}
 
         results_df["area_code"] = area_code
 

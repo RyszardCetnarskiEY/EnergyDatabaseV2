@@ -14,11 +14,13 @@ RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"  # Changed name for clarity
 def add_timestamp_column(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if not parsed_data.get("success", False):
-            return {**parsed_data, "success": False, "error": parsed_data.get("error", "Upstream error")}
+            #return {**parsed_data, "success": False, "error": parsed_data.get("error", "Upstream error")}
+            return {**parsed_data, "success": False, "error": parsed_data.get("error", "Upstream error"), "df": pd.DataFrame()}
 
         df = parsed_data.get("df", pd.DataFrame())
         if df.empty:
-            return {**parsed_data, "success": False, "error": "Empty DataFrame after parse_xml"}
+            #return {**parsed_data, "success": False, "error": "Empty DataFrame after parse_xml"}
+            return {**parsed_data, "success": False, "error": "Empty DataFrame after parse_xml", "df": pd.DataFrame()}
 
         df = df.copy()
         df['Period_Start_dt'] = pd.to_datetime(df['Period_Start'], utc=True, errors='coerce')
@@ -37,17 +39,20 @@ def add_timestamp_column(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
         return {**parsed_data, "df": df, "success": True}
     except Exception as e:
         logger.error(f"[add_timestamp_column] Error: {str(e)}")
-        return {**parsed_data, "success": False, "error": str(e)}
+        #return {**parsed_data, "success": False, "error": str(e)}
+        return {**parsed_data, "success": False, "error": str(e), "df": pd.DataFrame()}
 
 @task(task_id='add_timestamp_elements')
 def add_timestamp_elements(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if not parsed_data.get("success", False):
-            return {**parsed_data, "success": False}
+            #return {**parsed_data, "success": False}
+            return {**parsed_data, "success": False, "df": pd.DataFrame()}
 
         df = parsed_data.get("df", pd.DataFrame())
         if df.empty or "timestamp" not in df.columns:
-            return {**parsed_data, "success": False, "error": "Missing timestamp"}
+            #return {**parsed_data, "success": False, "error": "Missing timestamp"}
+            return {**parsed_data, "success": False, "error": "Missing timestamp", "df": pd.DataFrame()}
 
         df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
         valid = df['timestamp'].notna()
@@ -62,7 +67,8 @@ def add_timestamp_elements(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
         return {**parsed_data, "df": df, "success": True}
     except Exception as e:
         logger.error(f"[add_timestamp_elements] Error: {str(e)}")
-        return {**parsed_data, "success": False, "error": str(e)}
+        #return {**parsed_data, "success": False, "error": str(e)}
+        return {**parsed_data, "success": False, "error": str(e), "df": pd.DataFrame()}
 
 @task
 def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]) -> Dict[str, Any]:

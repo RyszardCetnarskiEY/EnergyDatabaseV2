@@ -28,7 +28,7 @@ from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
 #HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC") Do PYTEST
-HISTORICAL_START_DATE = datetime(2025, 6, 15, tz="UTC")
+HISTORICAL_START_DATE = datetime(2021, 1, 1, tz="UTC")
 
 default_args = {
     'owner': 'airflow',
@@ -47,16 +47,10 @@ def zip_df_and_params(dfs: list, params: list) -> list[dict]:
 
         result = []
         for df_dict, param in zip(dfs, params):
-            if isinstance(df_dict, dict):
-                result.append({
-                    "df": df_dict.get("df", pd.DataFrame()),
-                    "task_param": param
-                })
-            else:
-                result.append({
-                    "df": df_dict,
-                    "task_param": param
-                })
+            result.append({
+                "df": df_dict.get("df", pd.DataFrame()),  # Teraz zawsze słownik z kluczem 'df'
+                "task_param": param
+            })
         return result
     except Exception as e:
         logger.error(f"[zip_df_and_params] Error: {str(e)}")
@@ -64,6 +58,7 @@ def zip_df_and_params(dfs: list, params: list) -> list[dict]:
             "success": False,
             "error": str(e),
             "task_param": params[0] if params else {},
+            "df": pd.DataFrame()  # Zawsze zwracamy df
         }]
 
 print('TODO - move to taskGroup one day and share some tasks for other variables, like generating units operation points')
