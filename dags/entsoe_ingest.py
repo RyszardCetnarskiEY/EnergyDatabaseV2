@@ -33,7 +33,7 @@ default_args = {
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 1,
-    "retry_delay": timedelta(minutes=5),
+    "retry_delay": timedelta(minutes=2),
 }
 
 
@@ -61,7 +61,7 @@ print(
     start_date=HISTORICAL_START_DATE,  # CRITICAL: Use timezone-aware datetime
     catchup=True,
     tags=["entsoe", "energy", "api", "etl", "dynamic"],
-    max_active_runs=1,  # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
+    max_active_runs=10,  # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
     doc_md=__doc__,
 )
 def entsoe_dynamic_etl_pipeline():

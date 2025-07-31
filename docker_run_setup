@@ -1,0 +1,93 @@
+docker run --rm \
+  --user "$(id -u):0" \
+  -v /workspace/clean_airflow:/opt/airflow \
+  my-airflow:dev airflow db init
+
+docker run --rm \
+  --user "$(id -u):0" \
+  -v /workspace/clean_airflow:/opt/airflow \
+  my-airflow:dev users create \
+  --username rcetnarski \
+  --firstname Ryszard \
+  --lastname Cetnarski \
+  --role Admin \
+  --email ryszard.cetnarski@pl.ey.com \
+  --password EY2025
+
+
+  docker run -d \
+  --name airflow-scheduler \
+  --user "$(id -u):0" \
+  --env-file /workspace/clean_airflow/.env \
+  -v /workspace/clean_airflow/dags:/opt/airflow/dags \
+  -v /workspace/clean_airflow/tasks:/opt/airflow/tasks \
+  -v /workspace/clean_airflow:/opt/airflow \
+  -e PYTHONPATH=/opt/airflow \
+  my-airflow:dev scheduler
+
+docker logs -f airflow-scheduler
+docker exec -it airflow-scheduler ls /opt/airflow/dags
+
+docker exec -it airflow-scheduler bash
+echo $AIRFLOW_CONN_POSTGRES_AZURE_VM
+
+airflow connections get POSTGRES_AZURE_VM
+
+echo $AIRFLOW_CONN_ENTSOE
+
+
+docker run -d \
+  --name airflow-webserver \
+  --user "$(id -u):0" \
+  -p 8501:8080 \
+  --env-file /workspace/clean_airflow/.env \
+  -v /workspace/clean_airflow/dags:/opt/airflow/dags \
+  -v /workspace/clean_airflow/tasks:/opt/airflow/tasks \
+  -v /workspace/clean_airflow:/opt/airflow \
+  -e PYTHONPATH=/opt/airflow \
+  my-airflow:dev webserver
+
+
+docker logs -f airflow-webserver
+
+docker ps
+
+docker stop airflow-webserver
+docker rm airflow-webserver
+
+docker rm -f airflow-webserver
+docker rm -f airflow-scheduler
+
+
+docker run --rm \
+  --env-file /workspace/clean_airflow/.env \
+  -v /workspace/clean_airflow:/opt/airflow \
+  -e PYTHONPATH=/opt/airflow \
+  my-airflow:dev db init
+
+
+  Overview of What We’ll Deploy:
+    Namespace (optional, but recommended)
+    
+    Service Account + RBAC (required for scheduler to create pods)
+    
+    ConfigMap (Airflow config + env vars)
+    
+    Postgres Secret (optional if using external DB)
+    
+    Airflow Scheduler Deployment
+    
+    Airflow Webserver Deployment
+    
+    Webserver Service (NodePort or ClusterIP)
+    
+    (Optional) Flower or Logs PVC
+
+
+    kubectl apply -f airflow-configmap.yaml
+    kubectl apply -f airflow-rbac.yaml
+    kubectl apply -f airflow-scheduler.yaml
+    kubectl apply -f airflow-webserver.yaml
+
+    Optional: attach the airflow service account to your webserver and scheduler deployments.
+
