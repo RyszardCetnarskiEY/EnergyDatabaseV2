@@ -31,12 +31,14 @@ from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 HISTORICAL_START_DATE = datetime(2021, 1, 1, tz="UTC")
 
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=2),
+
 }
 
 @task
@@ -70,9 +72,11 @@ print('TODO - move to taskGroup one day and share some tasks for other variables
     schedule='@daily',
     start_date=HISTORICAL_START_DATE, # CRITICAL: Use timezone-aware datetime
     catchup=True,
-    tags=['entsoe', 'energy', 'api', 'etl', 'dynamic'],
-    max_active_runs=1, # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
-    doc_md=__doc__ 
+
+    tags=["entsoe", "energy", "api", "etl", "dynamic"],
+    max_active_runs=10,  # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
+    doc_md=__doc__,
+
 )
 def entsoe_dynamic_etl_pipeline():
 

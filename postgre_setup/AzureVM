@@ -46,3 +46,26 @@ airflow users create \
     --role Admin \
     --email ryszard.cetnarski@pl.ey.com\
     --password EY2025
+
+
+tmux new -s airflow
+source EnergyDatabase/airpgvenv/bin/activate
+airflow scheduler
+
+Ctrl + b, then press d
+tmux attach -t airflow
+tmux ls to list all names
+
+
+tmux new -s airWeb
+source EnergyDatabase/airpgvenv/bin/activate
+airflow webserver
+
+
+tmux attach -t airWeb
+
+
+kubectl create secret generic airflow-config-secrets \
+  --from-literal=AIRFLOW_CONN_POSTGRES_AZURE_VM='postgres://ryszardcetnarski:EY2025@74.248.184.56:443/energy_data_sources?sslmode=require' \
+  --from-literal=AIRFLOW_CONN_ENTSOE='https://:@ff91d43d-322a-43ba-b774-1f24d096388b@web-api.tp.entsoe.eu/api' \
+  --namespace=rcetnarski
