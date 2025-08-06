@@ -69,3 +69,6 @@ kubectl create secret generic airflow-config-secrets \
   --from-literal=AIRFLOW_CONN_POSTGRES_AZURE_VM='postgres://ryszardcetnarski:EY2025@74.248.184.56:443/energy_data_sources?sslmode=require' \
   --from-literal=AIRFLOW_CONN_ENTSOE='https://:@ff91d43d-322a-43ba-b774-1f24d096388b@web-api.tp.entsoe.eu/api' \
   --namespace=rcetnarski
+
+
+docker build -t ryscet/airflow-energy-data:v0.1 . --push
