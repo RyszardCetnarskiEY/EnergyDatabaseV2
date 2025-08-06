@@ -235,30 +235,33 @@ def _create_prod_table(variable_name):
     pg_hook.run(create_prod_sql)
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
 
+
 @task
-def cleanup_staging_tables(staging_dict: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
+def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id: str) -> Dict[str, Any]:
+    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+    conn = pg_hook.get_conn()
+    cur = conn.cursor()
+
     try:
-        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
-        table_name = staging_dict.get('staging_table_name', '')
+        for staging_dict in staging_dicts:
+            table_name = staging_dict.get("staging_table_name", "")
+            if table_name and not table_name.startswith("empty_staging_"):
+                logger.info(f"Dropping staging table: airflow_data.\"{table_name}\"")
+                cur.execute(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
 
-        if table_name and not table_name.startswith("empty_staging_"):
-            pg_hook.run(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
-            logger.info(f"Dropped staging table: airflow_data.\"{table_name}\".")
-
-        return {
-            "success": True,
-            "task_param": staging_dict.get("task_param", {}),
-            "staging_table_name": table_name
-        }
+        conn.commit()
+        logger.info("Batch cleanup of staging tables completed.")
+        return {"success": True}
 
     except Exception as e:
-        logger.error(f"[cleanup_staging_tables] Error: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "task_param": staging_dict.get("task_param", {}),
-            "staging_table_name": staging_dict.get("staging_table_name", "")
-        }
+        conn.rollback()
+        logger.error(f"[cleanup_staging_tables_batch] Error: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 @task
 def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date=None) -> Dict[str, Any]:
@@ -267,10 +270,13 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
     error = merge_result.get("error", "")
     production_table_name = merge_result.get("production_table_name", "")
 
-    entity = task_param.get("task_run_metadata", {}).get("var_name")
-    country = task_param.get("task_run_metadata", {}).get("country_name")
-    tso = task_param.get("task_run_metadata", {}).get("area_code")
-    business_date = execution_date.format("YYYY-MM-DD") if execution_date else None
+    metadata = task_param.get("task_run_metadata", {})
+    entity = metadata.get("var_name")
+    country = metadata.get("country_name")
+    tso = metadata.get("area_code")
+
+    # Extract business_date in YYYY-MM-DD format
+    business_date = execution_date.strftime("%Y-%m-%d") if execution_date else None
 
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
 
@@ -279,11 +285,16 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
         message = error or f"Unknown error for {entity} on {business_date}"
     else:
         try:
+            # Fully utilize the index: timestamp + variable + area_code
             sql = f'''
                 SELECT COUNT(*) FROM airflow_data."{production_table_name}"
-                WHERE date_trunc('day', "timestamp") = %s AND area_code = %s;
+                WHERE "timestamp" >= %s::date
+                  AND "timestamp" < (%s::date + interval '1 day')
+                  AND area_code = %s
+                  AND variable = %s;
             '''
-            count = pg_hook.get_first(sql, parameters=(business_date, tso))[0]
+            count = pg_hook.get_first(sql, parameters=(business_date, business_date, tso, entity))[0]
+
             if count > 0:
                 result = "success"
                 message = f"Loaded {count} records to {production_table_name}"
@@ -300,12 +311,14 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
     ON CONFLICT (entity, country, tso, business_date)
     DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
     '''
+
     try:
         pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
         return {"success": True, "result": result, "message": message, "task_param": task_param}
     except Exception as e:
         logger.error(f"[log_etl_result] Error logging to entsoe_api_log: {str(e)}")
         return {"success": False, "error": str(e), "task_param": task_param, "message": message}
+
 
 @task
 def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=None) -> list:
