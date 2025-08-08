@@ -25,21 +25,23 @@ def load_df_test_data(case_name):
     df_timestamp_elements = pd.read_csv(os.path.join(case_dir, "df_timestamp_elements.csv"), index_col=0)
 
     whole_response = pickle.load(open(os.path.join(case_dir, "whole_response_dict.pkl"), "rb"))
-
+    whole_response
     return df_no_timestamp, df_timestamp, df_timestamp_elements, whole_response
 
 
 @pytest.mark.parametrize("case_name", TEST_CASES)
 def test_parse_xml(case_name):
     df_no_timestamp, df_timestamp, df_timestamp_elements, whole_response = load_df_test_data(case_name)
-    parsed_df = parse_xml.function(whole_response)
-    assert all(parsed_df == df_no_timestamp)
+    parsed = parse_xml.function(whole_response)
+    parsed_df = parsed["df"]
+    pd.testing.assert_frame_equal(parsed_df, df_no_timestamp)
+    assert parsed["success"] is True
 
 
 @pytest.mark.parametrize("case_name", TEST_CASES)
 def test_add_timestamp_column(case_name):
     df_no_timestamp, df_timestamp, df_timestamp_elements, whole_response = load_df_test_data(case_name)
-    parsed_timestamp_df = add_timestamp_column.function(df_no_timestamp)
+    parsed_timestamp_df = add_timestamp_column.function({"success" :True, 'df' : df_no_timestamp})["df"]
     assert parsed_timestamp_df is not None
     assert "timestamp" in parsed_timestamp_df.columns
     assert all(parsed_timestamp_df["timestamp"] == df_timestamp["timestamp"])
@@ -48,7 +50,7 @@ def test_add_timestamp_column(case_name):
 @pytest.mark.parametrize("case_name", TEST_CASES)
 def test_add_timestamp_elements(case_name):
     df_no_timestamp, df_timestamp, df_timestamp_elements, whole_response = load_df_test_data(case_name)
-    parsed_timestamp_elements_df = add_timestamp_elements.function(df_timestamp)
+    parsed_timestamp_elements_df = add_timestamp_elements.function({"success" :True, 'df' : df_timestamp})["df"]
     # print(list(parsed_timestamp_elements_df["year"].unique()))
     assert set(parsed_timestamp_elements_df["year"].unique()).issubset(set([2024, 2025]))
     assert set(parsed_timestamp_elements_df["month"].unique()).issubset(set([12, 1]))
@@ -78,7 +80,7 @@ def test_store_raw_xml_success(mock_pg_hook_class, case_name):
 
     result = store_raw_xml.function(whole_response, "test_conn", "test_table")
 
-    assert result == 42
+    assert result['raw_id'] == 42
     mock_pg_hook.run.assert_called_once()
     args, kwargs = mock_pg_hook.run.call_args
     assert "INSERT INTO airflow_data" in args[0]  # Check SQL string

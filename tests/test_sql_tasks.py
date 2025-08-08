@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from tasks.sql_tasks import (
     _create_prod_table,
     _create_table_columns,
-    cleanup_staging_tables,
+    cleanup_staging_tables_batch,
     create_initial_tables,
     load_to_staging_table,
     merge_data_to_production,
@@ -36,7 +36,11 @@ def load_df_test_data(case_name):
 
     staging_results_dict = pickle.load(open(os.path.join(case_dir, "staging_results_dict.pkl"), "rb"))
 
-    df_and_params = {"df": parsed_df_timestamp_elements, "params": input_data}
+    # przed poprawką
+    #df_and_params = {"df": parsed_df_timestamp_elements, "params": input_data}
+
+    df_and_params = {"df": parsed_df_timestamp_elements, "task_param": input_data}
+
 
     return input_data, parsed_df_timestamp_elements, staging_results_dict, df_and_params
 
@@ -125,7 +129,10 @@ def test_merge_executes_sql(mock_pg_hook_class, mock_create_prod_table, case_nam
     production_table = staging_results_dict["var_name"].replace(" ", "_").lower()
     staging_table = staging_results_dict["staging_table_name"]
 
-    assert result == f"Merged {staging_table}", f"expected {staging_table} actual {result}"
+    assert result['success'] == True
+    assert result['staging_table_name'] == staging_table
+    assert result['production_table_name'] == production_table
+
     mock_create_prod_table.assert_called_once_with(production_table)
 
     assert mock_pg_hook.run.call_count == 1
@@ -174,7 +181,9 @@ def test_cleanup_staging_tables_drops_table(mock_logger, mock_pg_hook_class):
     mock_pg_hook_class.return_value = mock_pg_hook
 
     staging_dict = {"staging_table_name": "stg_table_x"}
-    cleanup_staging_tables.function(staging_dict, "fake_conn")
+    # Poprawka: przekazujemy listę słowników
+    cleanup_staging_tables_batch.function([staging_dict], "fake_conn")
 
     mock_pg_hook.run.assert_called_once_with('DROP TABLE IF EXISTS airflow_data."stg_table_x";')
-    mock_logger.info.assert_called_once_with('Dropped staging table: airflow_data."stg_table_x".')
+    #mock_logger.info.assert_called_once_with('Dropped staging table: airflow_data."stg_table_x".')
+    mock_logger.info.assert_any_call('Dropped staging table: airflow_data."stg_table_x".')

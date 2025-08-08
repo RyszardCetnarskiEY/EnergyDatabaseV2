@@ -54,7 +54,7 @@ def _create_table_columns(df):
     return create_table_columns
 
 @task(task_id='load_to_staging_table')
-def load_to_staging_table(df_and_params: Dict[str, Any], db_conn_id: str, **context) -> Dict[str, Any]:
+def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Dict[str, Any]:
     try:
         df = df_and_params['df']
         task_param = df_and_params['task_param']
@@ -80,7 +80,7 @@ def load_to_staging_table(df_and_params: Dict[str, Any], db_conn_id: str, **cont
 
         logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
 
-        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+        pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         drop_stmt = f'DROP TABLE IF EXISTS airflow_data."{staging_table}";'
         create_stmt = f'CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);'
 
@@ -245,11 +245,15 @@ def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id
     try:
         for staging_dict in staging_dicts:
             table_name = staging_dict.get("staging_table_name", "")
-            if table_name and not table_name.startswith("empty_staging_"):
-                logger.info(f"Dropping staging table: airflow_data.\"{table_name}\"")
-                cur.execute(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
+            # if table_name and not table_name.startswith("empty_staging_"):
+            #     logger.info(f"Dropping staging table: airflow_data.\"{table_name}\"")
+            #     cur.execute(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
 
-        conn.commit()
+            if table_name and not table_name.startswith("empty_staging_"):
+                pg_hook.run(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
+                logger.info(f'Dropped staging table: airflow_data."{table_name}".')
+                conn.commit()
+                
         logger.info("Batch cleanup of staging tables completed.")
         return {"success": True}
 

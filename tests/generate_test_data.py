@@ -14,7 +14,7 @@ from tasks.df_processing_tasks import (
 )
 from tasks.entsoe_api_tasks import _generate_run_parameters_logic, extract_from_api
 from tasks.sql_tasks import (
-    cleanup_staging_tables,
+    cleanup_staging_tables_batch,
     load_to_staging_table,
     merge_data_to_production,
 )
@@ -53,8 +53,8 @@ if not os.path.exists(dirpath):
 
 i = 0
 for test_param in test_params:
-    test_case_name = f"{test_param["entsoe_api_params"]["periodStart"]}_{test_param["task_run_metadata"]["var_name"]}_{test_param["task_run_metadata"]["country_code"]}"
-    case_path = os.path.join(os.path.join(dirpath, test_case_name))
+    test_case_name = f"{test_param['entsoe_api_params']['periodStart']}_{test_param['task_run_metadata']['var_name']}_{test_param['task_run_metadata']['country_code']}"
+    case_path = os.path.join(dirpath, test_case_name)
 
     if os.path.exists(case_path):
         shutil.rmtree(case_path)
@@ -67,24 +67,38 @@ for test_param in test_params:
     with open(os.path.join(case_path, "whole_response_dict.pkl"), "wb") as file:
         pickle.dump(response, file)
     with open(os.path.join(case_path, "entsoe_xml_response.xml"), "w") as file:
-        file.write(response["xml_content"])
+        file.write(response.get("xml_content", ""))
 
-    df = parse_xml.function(response)
+    parsed = parse_xml.function(response)
+    df = parsed["df"]
+    if not parsed.get("success", False) or df.empty:
+        # Zapisz puste pliki, żeby testy mogły sprawdzić przypadki braku danych
+        df.to_csv(os.path.join(case_path, "df_no_timestamp.csv"))
+        df.to_csv(os.path.join(case_path, "df_timestamp.csv"))
+        df.to_csv(os.path.join(case_path, "df_timestamp_elements.csv"))
+        with open(os.path.join(case_path, "staging_results_dict.pkl"), "wb") as file:
+            pickle.dump({}, file)
+        continue
+
     df.to_csv(os.path.join(case_path, "df_no_timestamp.csv"))
 
-    df_stamped = add_timestamp_column.function(df)
+
+
+    df_stamped_dict = add_timestamp_column.function({"df": df, "success": True})
+    df_stamped = df_stamped_dict.get("df", df_stamped_dict)
     df_stamped.to_csv(os.path.join(case_path, "df_timestamp.csv"))
 
-    enriched_df = add_timestamp_elements.function(df_stamped)
+    enriched_dict = add_timestamp_elements.function({"df": df_stamped, "success": True})
+    enriched_df = enriched_dict.get("df", enriched_dict)
     enriched_df.to_csv(os.path.join(case_path, "df_timestamp_elements.csv"))
 
     combined_for_staging = combine_df_and_params.function(df=enriched_df, task_param=test_param)
-    staging_dict = load_to_staging_table.function(db_conn_id=POSTGRES_CONN_ID, df_and_params=combined_for_staging, **test_context)
+    staging_dict = load_to_staging_table.function(df_and_params=combined_for_staging, db_conn_id=POSTGRES_CONN_ID, **test_context)
 
     with open(os.path.join(case_path, "staging_results_dict.pkl"), "wb") as file:
         pickle.dump(staging_dict, file)
 
-    merged_results = merge_data_to_production.function(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
-    cleanup_staging_tables(db_conn_id=POSTGRES_CONN_ID, staging_dict=staging_dict)
+    merged_results = merge_data_to_production.function(staging_dict=staging_dict, db_conn_id=POSTGRES_CONN_ID)
+    cleanup_staging_tables_batch([staging_dict], db_conn_id=POSTGRES_CONN_ID)
 
     i += 1
