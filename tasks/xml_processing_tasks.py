@@ -14,40 +14,35 @@ RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"  # Changed name for clarity
 
 @task(task_id='store_raw_xml')
 def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> Dict[str, Any]:
-    try:
-        if not extracted_data.get("success", False):
-            #return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
-            return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed"), "df": pd.DataFrame()}
+    if not extracted_data.get("success", False):
+        #return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
+        return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed"), "df": pd.DataFrame()}
 
-        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
-        sql = f"""
-        INSERT INTO airflow_data."{table_name}"
-            (var_name, country_name, area_code, status_code, period_start, period_end, request_time, xml_data, request_parameters, content_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-        RETURNING id;"""
+    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+    sql = f"""
+    INSERT INTO airflow_data."{table_name}"
+        (var_name, country_name, area_code, status_code, period_start, period_end, request_time, xml_data, request_parameters, content_type)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+    RETURNING id;"""
 
-        inserted_id = pg_hook.run(
-            sql,
-            parameters=(
-                extracted_data['task_param']['task_run_metadata']['var_name'],
-                extracted_data['task_param']['task_run_metadata']['country_name'],
-                extracted_data['task_param']['task_run_metadata']['area_code'],
-                extracted_data['status_code'],
-                extracted_data['period_start'],
-                extracted_data['period_end'],
-                extracted_data['logical_date_processed'],
-                extracted_data['xml_content'],
-                extracted_data['request_params'],
-                extracted_data['content_type'],
-            ),
-            handler=lambda cursor: cursor.fetchone()[0]
-        )
-        #return {**extracted_data, "stored": True, "raw_id": inserted_id}
-        return {**extracted_data, "stored": True, "raw_id": inserted_id, "df": pd.DataFrame()}
-    except Exception as e:
-        logger.error(f"[store_raw_xml] Error: {str(e)}")
-        #return {**extracted_data, "success": False, "stored": False, "error": str(e)}
-        return {**extracted_data, "success": False, "stored": False, "error": str(e), "df": pd.DataFrame()}
+    inserted_id = pg_hook.run(
+        sql,
+        parameters=(
+            extracted_data['var_name'],
+            extracted_data['country_name'],
+            extracted_data['area_code'],
+            extracted_data['status_code'],
+            extracted_data['period_start'],
+            extracted_data['period_end'],
+            extracted_data['logical_date_processed'],
+            extracted_data['xml_content'],
+            extracted_data['request_params'],
+            extracted_data['content_type'],
+        ),
+        handler=lambda cursor: cursor.fetchone()[0]
+    )
+    #return {**extracted_data, "stored": True, "raw_id": inserted_id}
+    return {**extracted_data, "stored": True, "raw_id": inserted_id, "df": pd.DataFrame()}
 
 def handle_actual_generation_per_production_unit(ts, var_name, ns):
     # Obsługuje przypadek "Actual Generation per Production Unit MAIN"
@@ -171,6 +166,10 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
             return {**extracted_data, "success": False, "error": "No data extracted", "df": pd.DataFrame()}
 
         results_df["area_code"] = area_code
+
+        # Wymuszamy typ int na kolumnie Position, jeśli istnieje
+        if "Position" in results_df.columns:
+            results_df["Position"] = results_df["Position"].astype(int)
 
         return {**extracted_data, "success": True, "df": results_df}
     
