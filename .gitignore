@@ -13,8 +13,8 @@ secretstore.yaml
 *.yaml
 correctairflowvenv/
 linux-amd64
-
-
+tests/test_data/
+new_airflow_venv/
 
 # C extensions
 *.so

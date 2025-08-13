@@ -42,13 +42,13 @@ default_args = {
 }
 
 @task
-def zip_df_and_params(dfs: list, params: list) -> list[dict]:
+def zip_df_and_params(dfs: list, task_params: list) -> list[dict]:
     try:
-        if len(dfs) != len(params):
-            raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(params)={len(params)}")
+        if len(dfs) != len(task_params):
+            raise ValueError(f"Cannot zip: len(dfs)={len(dfs)} vs len(task_params)={len(task_params)}")
 
         result = []
-        for df_dict, param in zip(dfs, params):
+        for df_dict, param in zip(dfs, task_params):
             result.append({
                 "df": df_dict.get("df", pd.DataFrame()),  # Teraz zawsze słownik z kluczem 'df'
                 "task_param": param
@@ -59,7 +59,7 @@ def zip_df_and_params(dfs: list, params: list) -> list[dict]:
         return [{
             "success": False,
             "error": str(e),
-            "task_param": params[0] if params else {},
+            "task_param": task_params[0] if task_params else {},
             "df": pd.DataFrame()  # Zawsze zwracamy df
         }]
 
@@ -74,7 +74,7 @@ print('TODO - move to taskGroup one day and share some tasks for other variables
     catchup=True,
 
     tags=["entsoe", "energy", "api", "etl", "dynamic"],
-    max_active_runs=10,  # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
+    max_active_runs=1,  # Limit to 1 active DAG run to avoid overwhelming API/DB during backfill
     doc_md=__doc__,
 
 )
@@ -102,72 +102,100 @@ def entsoe_dynamic_etl_pipeline():
     def extract_all(task_parameters: list) -> list:
         results = []
         for param in task_parameters:
-            results.append(extract_from_api(param))
+            results.append(extract_from_api.function(param))
         return results
 
     @task
     def store_all(extracted_data_list: list, db_conn_id: str, table_name: str) -> list:
         results = []
         for data in extracted_data_list:
-            results.append(store_raw_xml(data, db_conn_id, table_name))
+            results.append(store_raw_xml.function(data, db_conn_id, table_name))
         return results
 
     @task
     def parse_all(extracted_data_list: list) -> list:
         results = []
         for data in extracted_data_list:
-            results.append(parse_xml(data))
+            results.append(parse_xml.function(data))
         return results
 
     @task
     def add_timestamp_all(parsed_dfs: list) -> list:
         results = []
         for df in parsed_dfs:
-            results.append(add_timestamp_column(df))
+            # Serializacja DataFrame do JSON
+            if isinstance(df, pd.DataFrame):
+                results.append(df.to_json(orient="split"))
+            elif isinstance(df, dict) and "df" in df and isinstance(df["df"], pd.DataFrame):
+                results.append({**df, "df": df["df"].to_json(orient="split")})
+            else:
+                results.append(df)
         return results
 
     @task
     def add_timestamp_elements_all(parsed_dfs: list) -> list:
         results = []
         for df in parsed_dfs:
-            results.append(add_timestamp_elements(df))
+            # Deserializacja jeśli string JSON
+            if isinstance(df, str):
+                df = pd.read_json(df, orient="split")
+            elif isinstance(df, dict) and "df" in df and isinstance(df["df"], str):
+                df = {**df, "df": pd.read_json(df["df"], orient="split")}
+            results.append(add_timestamp_elements.function(df))
         return results
 
     @task
-    def zip_all(dfs: list, params: list) -> list:
-        return zip_df_and_params(dfs, params)
+    def zip_all(dfs: list, task_params: list) -> list:
+        # Serializacja DataFrame w dict do JSON
+        serializable = []
+        for item in dfs:
+            if isinstance(item, dict) and "df" in item and isinstance(item["df"], pd.DataFrame):
+                serializable.append({**item, "df": item["df"].to_json(orient="split")})
+            else:
+                serializable.append(item)
+        return zip_df_and_params.function(serializable, task_params)
 
     @task
     def combine_all(zipped: list) -> list:
         results = []
         for item in zipped:
-            results.append(combine_df_and_params(item["df"], item["task_param"]))
+            # Deserializacja DataFrame z JSON
+            df = item["df"]
+            if isinstance(df, str):
+                df = pd.read_json(df, orient="split")
+            results.append(combine_df_and_params.function(df, item["task_param"]))
         return results
 
     @task
     def load_staging_all(combined: list, db_conn_id: str) -> list:
         results = []
         for item in combined:
-            results.append(load_to_staging_table(item))
+            results.append(load_to_staging_table.function(item))
         return results
 
     @task
     def merge_all(staging_dicts: list, db_conn_id: str) -> list:
         results = []
+        # debugpy.listen(("0.0.0.0", 8508))
+        # print("Waiting for VS Code debugger on :8508...")
+        # debugpy.wait_for_client()
+        # debugpy.breakpoint()
         for item in staging_dicts:
-            results.append(merge_data_to_production(item, db_conn_id=db_conn_id))
+            results.append(merge_data_to_production.function(item, db_conn_id=db_conn_id))
         return results
 
     @task
     def cleanup_all(staging_dicts: list, db_conn_id: str):
-        return cleanup_staging_tables_batch(staging_dicts, db_conn_id=db_conn_id)
+        return cleanup_staging_tables_batch.function(staging_dicts, db_conn_id=db_conn_id)
 
     @task
     def log_all(merged_results: list, db_conn_id: str):
         results = []
         for item in merged_results:
-            results.append(log_etl_result(item, db_conn_id=db_conn_id))
+            results.append(log_etl_result.function(item, db_conn_id=db_conn_id))
         return results
+
+
 
     extracted_data = extract_all(task_parameters)
     stored_xml_ids = store_all(extracted_data, POSTGRES_CONN_ID, initial_setup["raw_xml_table"])

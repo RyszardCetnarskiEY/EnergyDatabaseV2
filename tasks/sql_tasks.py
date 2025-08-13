@@ -13,6 +13,9 @@ import pandas as pd
 from airflow.decorators import task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
+import debugpy
+
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,137 +58,146 @@ def _create_table_columns(df):
 
 @task(task_id='load_to_staging_table')
 def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Dict[str, Any]:
-    try:
-        df = df_and_params['df']
-        task_param = df_and_params['task_param']
+    #try:
+    df = df_and_params['df']
+    task_param = df_and_params['task_param']
 
-        if df.empty:
-            message = f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty."
-            logger.info(message)
-            return {
-                "success": False,
-                "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
-                "var_name": task_param["task_run_metadata"]["var_name"],
-                "task_param": task_param,
-                "error": message
-            }
+        # if df.empty:
+        #     message = f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty."
+        #     logger.info(message)
+        #     return {
+        #         "success": False,
+        #         "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
+        #         "var_name": task_param["task_run_metadata"]["var_name"],
+        #         "task_param": task_param,
+        #         "error": message
+        #     }
+    # debugpy.listen(("0.0.0.0", 8508))
+    # print("Waiting for VS Code debugger on :8508...")
+    # debugpy.wait_for_client()
+    # debugpy.breakpoint()
 
-        df = df.drop("Position", axis=1, errors="ignore")
-        df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').astype(float)
-        cols = _create_table_columns(df)
+    df = df.drop("Position", axis=1, errors="ignore")
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').astype(float)
+    cols = _create_table_columns(df)
 
-        random_number = random.randint(0, 100000)
-        staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
-        staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)[:63]
+    random_number = random.randint(0, 100000)
+    staging_table = f"stg_entsoe_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}_{random_number}"
+    staging_table = "".join(c if c.isalnum() else "_" for c in staging_table)[:63]
 
-        logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
+    logger.info(f"Loading {len(df)} records to staging table: airflow_data.\"{staging_table}\" for {task_param['task_run_metadata']['country_name']}")
 
-        pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        drop_stmt = f'DROP TABLE IF EXISTS airflow_data."{staging_table}";'
-        create_stmt = f'CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);'
+    pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    drop_stmt = f'DROP TABLE IF EXISTS airflow_data."{staging_table}";'
+    create_stmt = f'CREATE TABLE airflow_data."{staging_table}" (id SERIAL PRIMARY KEY, {", ".join(cols)}, processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);'
 
-        pg_hook.run(drop_stmt)
-        pg_hook.run(create_stmt)
+    pg_hook.run(drop_stmt)
+    pg_hook.run(create_stmt)
 
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False, header=True)
-        csv_buffer.seek(0)
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False, header=True)
+    csv_buffer.seek(0)
 
-        conn = pg_hook.get_conn()
-        cur = conn.cursor()
-        sql_columns = ', '.join([f'"{col}"' for col in df.columns])
+    conn = pg_hook.get_conn()
+    cur = conn.cursor()
+    sql_columns = ', '.join([f'"{col}"' for col in df.columns])
 
-        try:
-            cur.copy_expert(f'COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS \',\' QUOTE \'\"\'', csv_buffer)
+        #try:
+    cur.copy_expert(f'COPY airflow_data."{staging_table}" ({sql_columns}) FROM STDIN WITH CSV HEADER DELIMITER AS \',\' QUOTE \'\"\'', csv_buffer)
 
-            conn.commit()
-        finally:
-            cur.close()
-            conn.close()
+    conn.commit()
+    #    finally:
+    cur.close()
+    conn.close()
 
-        return {
-            "success": True,
-            "staging_table_name": staging_table,
-            "var_name": task_param["task_run_metadata"]["var_name"],
-            "task_param": task_param
-        }
+    return {
+        "success": True,
+        "staging_table_name": staging_table,
+        "var_name": task_param["task_run_metadata"]["var_name"],
+        "task_param": task_param
+    }
 
-    except Exception as e:
-        logger.error(f"[load_to_staging_table] Error: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "staging_table_name": "",
-            "var_name": df_and_params['task_param']['task_run_metadata']['var_name'],
-            "task_param": df_and_params['task_param']
-        }
+    # except Exception as e:
+    #     logger.error(f"[load_to_staging_table] Error: {str(e)}")
+    #     return {
+    #         "success": False,
+    #         "error": str(e),
+    #         "staging_table_name": "",
+    #         "var_name": df_and_params['task_param']['task_run_metadata']['var_name'],
+    #         "task_param": df_and_params['task_param']
+    #     }
 
 @task(task_id='merge_to_production_table')
 def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
-    try:
-        staging_table_name = staging_dict.get('staging_table_name', '')
-        task_param = staging_dict.get('task_param', {})
-        var_name = staging_dict.get('var_name', '')
+    #try:
+    staging_table_name = staging_dict.get('staging_table_name', '')
+    task_param = staging_dict.get('task_param', {})
+    var_name = staging_dict.get('var_name', '')
 
-        production_table_name = var_name.replace(" ", "_").lower()
+    production_table_name = var_name.replace(" ", "_").lower()
 
-        if staging_table_name.startswith("empty_staging_") or not staging_dict.get("success", True):
-            message = f"Skipping merge for empty/failed staging data: {staging_table_name}"
-            logger.info(message)
-            return {
-                "success": False,
-                "error": message,
-                "staging_table_name": staging_table_name,
-                "production_table_name": production_table_name,
-                "task_param": task_param
-            }
+    # if staging_table_name.startswith("empty_staging_") or not staging_dict.get("success", True):
+    #     message = f"Skipping merge for empty/failed staging data: {staging_table_name}"
+    #     logger.info(message)
+    #     return {
+    #         "success": False,
+    #         "error": message,
+    #         "staging_table_name": staging_table_name,
+    #         "production_table_name": production_table_name,
+    #         "task_param": task_param
+    #     }
 
-        pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
-        _create_prod_table(production_table_name)
+    pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
+    _create_prod_table(production_table_name)
 
-        merge_sql = f'''
-            INSERT INTO airflow_data."{production_table_name}" (
-                "timestamp", "resolution", "year", "quarter", "month", "day",
-                dayofweek, hour, area_code, variable, quantity
-            )
-            SELECT 
-                "timestamp", "Resolution", "year", "quarter", "month", "day",
-                dayofweek, hour, area_code, variable, quantity
-            FROM airflow_data."{staging_table_name}"
-            WHERE timestamp IS NOT NULL AND variable IS NOT NULL
-            ON CONFLICT (timestamp, variable, area_code) DO UPDATE SET
-                "timestamp" = EXCLUDED."timestamp",
-                "resolution" = EXCLUDED."resolution",
-                year = EXCLUDED.year,
-                quarter = EXCLUDED.quarter,
-                month = EXCLUDED.month,
-                day = EXCLUDED.day,
-                dayofweek = EXCLUDED.dayofweek,
-                hour = EXCLUDED.hour,
-                area_code = EXCLUDED.area_code,
-                variable = EXCLUDED.variable,
-                quantity = EXCLUDED.quantity,
-                processed_at = CURRENT_TIMESTAMP;
-        '''
+    # debugpy.listen(("0.0.0.0", 8508))
+    # print("Waiting for VS Code debugger on :8508...")
+    # debugpy.wait_for_client()
+    # debugpy.breakpoint()
 
-        pg_hook.run(merge_sql)
-        logger.info(f"Successfully merged data from airflow_data.\"{staging_table_name}\" to airflow_data.\"{production_table_name}\".")
-        return {
-            "success": True,
-            "staging_table_name": staging_table_name,
-            "production_table_name": production_table_name,
-            "task_param": task_param
-        }
+    merge_sql = f'''
+        INSERT INTO airflow_data."{production_table_name}" (
+            "timestamp", "resolution", "year", "quarter", "month", "day",
+            dayofweek, hour, area_code, variable, quantity
+        )
+        SELECT 
+            "timestamp", "Resolution", "year", "quarter", "month", "day",
+            dayofweek, hour, area_code, variable, quantity
+        FROM airflow_data."{staging_table_name}"
+        WHERE timestamp IS NOT NULL AND variable IS NOT NULL
+        ON CONFLICT (timestamp, variable, area_code) DO UPDATE SET
+            "timestamp" = EXCLUDED."timestamp",
+            "resolution" = EXCLUDED."resolution",
+            year = EXCLUDED.year,
+            quarter = EXCLUDED.quarter,
+            month = EXCLUDED.month,
+            day = EXCLUDED.day,
+            dayofweek = EXCLUDED.dayofweek,
+            hour = EXCLUDED.hour,
+            area_code = EXCLUDED.area_code,
+            variable = EXCLUDED.variable,
+            quantity = EXCLUDED.quantity,
+            processed_at = CURRENT_TIMESTAMP;
+    '''
 
-    except Exception as e:
-        logger.error(f"[merge_data_to_production] Error: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "staging_table_name": staging_dict.get('staging_table_name', ''),
-            "production_table_name": staging_dict.get('var_name', '').replace(" ", "_").lower(),
-            "task_param": staging_dict.get('task_param', {})
-        }
+    pg_hook.run(merge_sql)
+    logger.info(f"Successfully merged data from airflow_data.\"{staging_table_name}\" to airflow_data.\"{production_table_name}\".")
+    return {
+        "success": True,
+        "staging_table_name": staging_table_name,
+        "production_table_name": production_table_name,
+        "task_param": task_param
+    }
+
+    # except Exception as e:
+    #     logger.error(f"[merge_data_to_production] Error: {str(e)}")
+    #     return {
+    #         "success": False,
+    #         "error": str(e),
+    #         "staging_table_name": staging_dict.get('staging_table_name', ''),
+    #         "production_table_name": staging_dict.get('var_name', '').replace(" ", "_").lower(),
+    #         "task_param": staging_dict.get('task_param', {})
+    #     }
 
 @task(task_id='create_initial_tables_if_not_exist')
 def create_initial_tables(db_conn_id: str, raw_xml_table: str) -> dict:
@@ -242,29 +254,30 @@ def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id
     conn = pg_hook.get_conn()
     cur = conn.cursor()
 
-    try:
-        for staging_dict in staging_dicts:
-            table_name = staging_dict.get("staging_table_name", "")
-            # if table_name and not table_name.startswith("empty_staging_"):
-            #     logger.info(f"Dropping staging table: airflow_data.\"{table_name}\"")
-            #     cur.execute(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
+    #try:
+    for staging_dict in staging_dicts:
+        table_name = staging_dict.get("staging_table_name", "")
+        # if table_name and not table_name.startswith("empty_staging_"):
+        #     logger.info(f"Dropping staging table: airflow_data.\"{table_name}\"")
+        #     cur.execute(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
 
-            if table_name and not table_name.startswith("empty_staging_"):
-                pg_hook.run(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
-                logger.info(f'Dropped staging table: airflow_data."{table_name}".')
-                conn.commit()
-                
-        logger.info("Batch cleanup of staging tables completed.")
-        return {"success": True}
+        if table_name and not table_name.startswith("empty_staging_"):
+            pg_hook.run(f'DROP TABLE IF EXISTS airflow_data."{table_name}";')
+            logger.info(f'Dropped staging table: airflow_data."{table_name}".')
+            conn.commit()
 
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"[cleanup_staging_tables_batch] Error: {str(e)}")
-        return {"success": False, "error": str(e)}
+    cur.close()
+    conn.close()
 
-    finally:
-        cur.close()
-        conn.close()
+    logger.info("Batch cleanup of staging tables completed.")
+    return {"success": True}
+
+    # except Exception as e:
+    #     conn.rollback()
+    #     logger.error(f"[cleanup_staging_tables_batch] Error: {str(e)}")
+    #     return {"success": False, "error": str(e)}
+
+    # finally:
 
 
 @task
@@ -288,26 +301,26 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
         result = "fail"
         message = error or f"Unknown error for {entity} on {business_date}"
     else:
-        try:
-            # Fully utilize the index: timestamp + variable + area_code
-            sql = f'''
-                SELECT COUNT(*) FROM airflow_data."{production_table_name}"
-                WHERE "timestamp" >= %s::date
-                  AND "timestamp" < (%s::date + interval '1 day')
-                  AND area_code = %s
-                  AND variable = %s;
-            '''
-            count = pg_hook.get_first(sql, parameters=(business_date, business_date, tso, entity))[0]
+    #try:
+        # Fully utilize the index: timestamp + variable + area_code
+        sql = f'''
+            SELECT COUNT(*) FROM airflow_data."{production_table_name}"
+            WHERE "timestamp" >= %s::date
+                AND "timestamp" < (%s::date + interval '1 day')
+                AND area_code = %s
+                AND variable = %s;
+        '''
+        count = pg_hook.get_first(sql, parameters=(business_date, business_date, tso, entity))[0]
 
-            if count > 0:
-                result = "success"
-                message = f"Loaded {count} records to {production_table_name}"
-            else:
-                result = "fail"
-                message = "No records found in production table"
-        except Exception as e:
+        if count > 0:
+            result = "success"
+            message = f"Loaded {count} records to {production_table_name}"
+        else:
             result = "fail"
-            message = f"Error checking production data: {str(e)}"
+            message = "No records found in production table"
+        # except Exception as e:
+        #     result = "fail"
+        #     message = f"Error checking production data: {str(e)}"
 
     log_sql = '''
     INSERT INTO airflow_data.entsoe_api_log (entity, country, tso, business_date, result, message)
@@ -316,12 +329,12 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
     DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
     '''
 
-    try:
-        pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
-        return {"success": True, "result": result, "message": message, "task_param": task_param}
-    except Exception as e:
-        logger.error(f"[log_etl_result] Error logging to entsoe_api_log: {str(e)}")
-        return {"success": False, "error": str(e), "task_param": task_param, "message": message}
+    #try:
+    pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
+    return {"success": True, "result": result, "message": message, "task_param": task_param}
+    # except Exception as e:
+    #     logger.error(f"[log_etl_result] Error logging to entsoe_api_log: {str(e)}")
+    #     return {"success": False, "error": str(e), "task_param": task_param, "message": message}
 
 
 @task
