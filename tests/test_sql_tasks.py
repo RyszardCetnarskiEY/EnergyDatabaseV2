@@ -134,7 +134,7 @@ def test_merge_executes_sql(mock_pg_hook_class, mock_create_prod_table, case_nam
     assert result['production_table_name'] == production_table
 
     mock_create_prod_table.assert_called_once_with(production_table)
-
+    #print(result['success'] )
     assert mock_pg_hook.run.call_count == 1
     actual_sql = mock_pg_hook.run.call_args[0][0]
     assert f'FROM airflow_data."{staging_table}"' in actual_sql
