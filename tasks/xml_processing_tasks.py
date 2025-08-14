@@ -15,8 +15,8 @@ RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"  # Changed name for clarity
 @task(task_id='store_raw_xml')
 def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: str) -> Dict[str, Any]:
     if not extracted_data.get("success", False):
-        #return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed")}
-        return {**extracted_data, "stored": False, "error": extracted_data.get("error", "extract failed"), "df": pd.DataFrame()}
+        logger.warning("[store_raw_xml] upstream failed: %s", extracted_data.get("error"))
+        return {**extracted_data, "stored": False, "df": pd.DataFrame()}
 
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
     sql = f"""
@@ -42,7 +42,9 @@ def store_raw_xml(extracted_data: Dict[str, Any], db_conn_id: str, table_name: s
         handler=lambda cursor: cursor.fetchone()[0]
     )
     #return {**extracted_data, "stored": True, "raw_id": inserted_id}
-    return {**extracted_data, "stored": True, "raw_id": inserted_id, "df": pd.DataFrame()}
+    result = {**extracted_data, "stored": True, "raw_id": inserted_id, "df": pd.DataFrame()}
+    logger.info("[store_raw_xml] inserted raw_id=%s into %s", inserted_id, table_name)
+    return result
 
 def handle_actual_generation_per_production_unit(ts, var_name, ns):
     # Obsługuje przypadek "Actual Generation per Production Unit MAIN"
@@ -95,7 +97,11 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
 
         ns = {'ns': root.tag[root.tag.find("{")+1:root.tag.find("}")]} if "{" in root.tag else {}
 
-        results_df = pd.DataFrame(columns = ["Position", "Period_Start", "Period_End", "Resolution", "quantity", "variable"])
+        # dorzuć area_code do listy kolumn bazowych (nie jest to konieczne, ale czytelniejsze)
+        results_df = pd.DataFrame(columns=[
+            "Position", "Period_Start", "Period_End",
+            "Resolution", "quantity", "variable", "area_code"
+        ])
 
         resolutions = [elem.text for elem in root.findall('.//ns:resolution', namespaces=ns)]
         found_res = var_resolution in resolutions
@@ -158,21 +164,14 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
             partial_df.loc[:, "Period_End"] = end
             partial_df.loc[:, "Resolution"] = resolution
             partial_df.loc[:, "variable"] = value_label
+            partial_df.loc[:, "area_code"] = area_code
             results_df = pd.concat([results_df, partial_df.reset_index(drop=False, names = 'Position' )], axis=0)
 
         if results_df.empty:
-            logger.warning(f"Parsed XML with TimeSeries structure but no data rows extracted for {var_name} {country_name} {area_code}.")
-            #return pd.DataFrame()
             return {**extracted_data, "success": False, "error": "No data extracted", "df": pd.DataFrame()}
 
-        results_df["area_code"] = area_code
-
-        # Wymuszamy typ int na kolumnie Position, jeśli istnieje
-        if "Position" in results_df.columns:
-            results_df["Position"] = results_df["Position"].astype(int)
-
-        return {**extracted_data, "success": True, "df": results_df}
-    
+        out = {**extracted_data, "success": True, "df": results_df}
+        return out
     except Exception as e:
-        logger.error(f"[parse_xml] Error: {str(e)}")
+        logger.exception("[parse_xml] error")
         return {**extracted_data, "success": False, "error": str(e), "df": pd.DataFrame()}

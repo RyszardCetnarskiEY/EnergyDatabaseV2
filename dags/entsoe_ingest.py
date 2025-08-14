@@ -19,6 +19,7 @@ from airflow.utils.dates import days_ago
 
 # Add the project root directory to sys.path so imports work from dags/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+logger = logging.getLogger(__name__)
 
 from tasks.entsoe_dag_config import POSTGRES_CONN_ID, RAW_XML_TABLE_NAME, COUNTRY_MAPPING
 from tasks.df_processing_tasks import add_timestamp_column, add_timestamp_elements, combine_df_and_params
@@ -27,18 +28,18 @@ from tasks.sql_tasks import load_to_staging_table, merge_data_to_production, cre
 from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
+
+
 #HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC") Do PYTEST
-HISTORICAL_START_DATE = datetime(2021, 1, 1, tz="UTC")
+HISTORICAL_START_DATE = datetime(2023, 1, 1, tz="UTC")
 
 default_args = {
-
     "owner": "airflow",
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=2),
-
 }
 
 @task
@@ -101,8 +102,15 @@ def entsoe_dynamic_etl_pipeline():
     @task
     def extract_all(task_parameters: list) -> list:
         results = []
-        for param in task_parameters:
-            results.append(extract_from_api.function(param))
+        for i, param in enumerate(task_parameters):
+            logger.info("[extract_all] %d/%d var=%s area=%s",
+                        i+1, len(task_parameters),
+                        param["task_run_metadata"]["var_name"],
+                        param["task_run_metadata"]["area_code"])
+            res = extract_from_api.function(param)
+            logger.info("[extract_all] result success=%s, keys=%s", res.get("success"), list(res.keys())[:10])
+            results.append(res)
+        logger.info("[extract_all] finished, total=%d", len(results))
         return results
 
     @task
@@ -119,17 +127,29 @@ def entsoe_dynamic_etl_pipeline():
             results.append(parse_xml.function(data))
         return results
 
+    # @task
+    # def add_timestamp_all(parsed_dfs: list) -> list:
+    #     results = []
+    #     for df in parsed_dfs:
+    #         # Serializacja DataFrame do JSON
+    #         if isinstance(df, pd.DataFrame):
+    #             results.append(df.to_json(orient="split"))
+    #         elif isinstance(df, dict) and "df" in df and isinstance(df["df"], pd.DataFrame):
+    #             results.append({**df, "df": df["df"].to_json(orient="split")})
+    #         else:
+    #             results.append(df)
+    #     return results
+
     @task
     def add_timestamp_all(parsed_dfs: list) -> list:
         results = []
-        for df in parsed_dfs:
-            # Serializacja DataFrame do JSON
-            if isinstance(df, pd.DataFrame):
-                results.append(df.to_json(orient="split"))
-            elif isinstance(df, dict) and "df" in df and isinstance(df["df"], pd.DataFrame):
-                results.append({**df, "df": df["df"].to_json(orient="split")})
+        for item in parsed_dfs:
+            item_with_ts = add_timestamp_column.function(item)
+
+            if isinstance(item_with_ts, dict) and "df" in item_with_ts and isinstance(item_with_ts["df"], pd.DataFrame):
+                results.append({**item_with_ts, "df": item_with_ts["df"].to_json(orient="split")})
             else:
-                results.append(df)
+                results.append(item_with_ts)
         return results
 
     @task
@@ -176,13 +196,9 @@ def entsoe_dynamic_etl_pipeline():
     @task
     def merge_all(staging_dicts: list, db_conn_id: str) -> list:
         results = []
-        # debugpy.listen(("0.0.0.0", 8508))
-        # print("Waiting for VS Code debugger on :8508...")
-        # debugpy.wait_for_client()
-        # debugpy.breakpoint()
         for item in staging_dicts:
             results.append(merge_data_to_production.function(item, db_conn_id=db_conn_id))
-        return results
+        return results  # tu nie filtruj po success=True
 
     @task
     def cleanup_all(staging_dicts: list, db_conn_id: str):
@@ -213,4 +229,4 @@ def entsoe_dynamic_etl_pipeline():
     log_result.set_upstream(merged_results)
 
 
-entsoe_dynamic_etl_dag = entsoe_dynamic_etl_pipeline()
+entsoe_test_etl_dag = entsoe_dynamic_etl_pipeline()

@@ -103,6 +103,10 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     Fetches data from the ENTSOE API for a given country and period.
     api_params is expected to be a dict with 'periodStart', 'periodEnd', 'country_code'.
     """
+    # <-- kluczowa zmiana: pobieramy kontekst z bieżącego taska (tu: extract_all)
+    ctx = get_current_context()
+    logical_date = ctx.get("logical_date")
+
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
@@ -128,7 +132,7 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
 
     try:
         response = _get_entsoe_response(log_str, api_request_params)
-        return {
+        result = {
             'success': True,
             'xml_content': response.text,
             'status_code': response.status_code,
@@ -139,18 +143,18 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
             'area_code': domain_code,
             "period_start": entsoe_api_params["periodStart"],
             "period_end": entsoe_api_params["periodEnd"],
-            'logical_date_processed': context['logical_date'].isoformat(),
+            #'logical_date_processed': context['logical_date'].isoformat(),
+            # <-- bezpiecznie: jeśli z jakiegoś powodu nie ma logical_date, zwróć None
+            'logical_date_processed': logical_date.isoformat() if logical_date else None,
+
             'request_params': json.dumps(api_request_params),
             'task_run_metadata': task_run_metadata
         }
+        return result
     except Exception as e:
-        logger.error(f"[extract_from_api] {log_str}: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "task_param": task_param
-        }
-
+        logger.exception("[extract_from_api] %s", log_str)
+        return {"success": False, "error": str(e), "task_param": task_param}
+        
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
     Zwraca odpowiedni(e) parametr(y) domeny dla zapytania ENTSO-E API.

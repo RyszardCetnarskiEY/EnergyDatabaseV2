@@ -73,9 +73,11 @@ def add_timestamp_elements(parsed_data: Dict[str, Any]) -> Dict[str, Any]:
 @task
 def combine_df_and_params(df: pd.DataFrame, task_param: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        #return {"df": df, "params": task_param, "success": not df.empty}
+        logger.info("[combine_df_and_params] df_shape=%s, var=%s, area=%s",
+                    df.shape if isinstance(df, pd.DataFrame) else None,
+                    task_param.get("task_run_metadata", {}).get("var_name"),
+                    task_param.get("task_run_metadata", {}).get("area_code"))
         return {"df": df, "task_param": task_param, "success": not df.empty}
     except Exception as e:
-        logger.error(f"[combine_df_and_params] Error: {str(e)}")
-        #return {"df": pd.DataFrame(), "params": task_param, "success": False, "error": str(e)}
+        logger.exception("[combine_df_and_params] error")
         return {"df": pd.DataFrame(), "task_param": task_param, "success": False, "error": str(e)}
