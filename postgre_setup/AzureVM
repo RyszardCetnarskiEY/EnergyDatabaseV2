@@ -1,3 +1,8 @@
+# Instalacja github command line żeby dało sie łatwo zalogować do githuba i pushować
+sudo apt update
+sudo apt install gh
+gh auth login
+
 # Moje IP w sieci EY (forward z local hosta)
 echo $WORKSPACE_EXTERNAL_IP
 
