@@ -18,6 +18,8 @@ from airflow.operators.empty import EmptyOperator # Not used in final version, b
 from airflow.exceptions import AirflowException
 from airflow.utils.dates import days_ago # Alternative for start_date
 
+from tasks.utils_airflow_ctx import safe_get_context
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from tasks.entsoe_dag_config import COUNTRY_MAPPING, ENTSOE_VARIABLES
 
@@ -97,12 +99,16 @@ def _get_entsoe_response(log_str, api_request_params):
     response.encoding = "utf-8"  # explicitly set encoding if not set
     return response
 
+from tasks.utils_airflow_ctx import safe_get_context
+
 @task(task_id='extract_from_api')
-def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
+def extract_from_api(task_param: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     """
     Fetches data from the ENTSOE API for a given country and period.
-    api_params is expected to be a dict with 'periodStart', 'periodEnd', 'country_code'.
     """
+    ctx = safe_get_context()  # działa i w Airflow i w pytest
+    logical_date = ctx.get("logical_date")
+
     entsoe_api_params = task_param["entsoe_api_params"]
     task_run_metadata = task_param["task_run_metadata"]
 
@@ -111,7 +117,6 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
     domain_code = entsoe_api_params["in_Domain"]
 
     domain_param = get_domain_param_key(document_type, process_type)
-
     api_request_params = entsoe_api_params.copy()
     if domain_param == "in_Domain":
         api_request_params["in_Domain"] = domain_code
@@ -139,18 +144,14 @@ def extract_from_api(task_param: Dict[str, Any], **context) -> Dict[str, Any]:
             'area_code': domain_code,
             "period_start": entsoe_api_params["periodStart"],
             "period_end": entsoe_api_params["periodEnd"],
-            'logical_date_processed': context['logical_date'].isoformat(),
+            'logical_date_processed': logical_date.isoformat() if logical_date else None,
             'request_params': json.dumps(api_request_params),
             'task_run_metadata': task_run_metadata
         }
     except Exception as e:
-        logger.error(f"[extract_from_api] {log_str}: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "task_param": task_param
-        }
-
+        logger.exception("[extract_from_api] %s", log_str)
+        return {"success": False, "error": str(e), "task_param": task_param}
+        
 def get_domain_param_key(document_type: str, process_type: str) -> str | tuple:
     """
     Zwraca odpowiedni(e) parametr(y) domeny dla zapytania ENTSO-E API.

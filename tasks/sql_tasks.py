@@ -12,7 +12,7 @@ import random
 import pandas as pd
 from airflow.decorators import task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-
+from airflow.operators.python import get_current_context
 import debugpy
 
 
@@ -58,24 +58,11 @@ def _create_table_columns(df):
 
 @task(task_id='load_to_staging_table')
 def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Dict[str, Any]:
-    #try:
     df = df_and_params['df']
     task_param = df_and_params['task_param']
 
-        # if df.empty:
-        #     message = f"Skipping load to staging for {task_param['task_run_metadata']['country_name']} {task_param['entsoe_api_params']['periodStart']} as DataFrame is empty."
-        #     logger.info(message)
-        #     return {
-        #         "success": False,
-        #         "staging_table_name": f"empty_staging_{task_param['task_run_metadata']['country_code']}_{task_param['entsoe_api_params']['periodStart']}",
-        #         "var_name": task_param["task_run_metadata"]["var_name"],
-        #         "task_param": task_param,
-        #         "error": message
-        #     }
-    # debugpy.listen(("0.0.0.0", 8508))
-    # print("Waiting for VS Code debugger on :8508...")
-    # debugpy.wait_for_client()
-    # debugpy.breakpoint()
+    area_code = task_param['task_run_metadata']['area_code']
+    df['area_code'] = area_code
 
     df = df.drop("Position", axis=1, errors="ignore")
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').astype(float)
@@ -116,16 +103,6 @@ def load_to_staging_table(df_and_params: Dict[str, Any], **context) -> Dict[str,
         "var_name": task_param["task_run_metadata"]["var_name"],
         "task_param": task_param
     }
-
-    # except Exception as e:
-    #     logger.error(f"[load_to_staging_table] Error: {str(e)}")
-    #     return {
-    #         "success": False,
-    #         "error": str(e),
-    #         "staging_table_name": "",
-    #         "var_name": df_and_params['task_param']['task_run_metadata']['var_name'],
-    #         "task_param": df_and_params['task_param']
-    #     }
 
 @task(task_id='merge_to_production_table')
 def merge_data_to_production(staging_dict: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
@@ -247,7 +224,6 @@ def _create_prod_table(variable_name):
     pg_hook.run(create_prod_sql)
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
 
-
 @task
 def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id: str) -> Dict[str, Any]:
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
@@ -279,48 +255,44 @@ def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id
 
     # finally:
 
-
 @task
-def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date=None) -> Dict[str, Any]:
+def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
+    ctx = get_current_context()
+    di_start = ctx.get("data_interval_start")
+    # data biznesowa (początek interwału) w strefie PL
+    business_date = di_start.in_timezone("Europe/Warsaw").to_date_string() if di_start else None
+
     task_param = merge_result.get("task_param", {})
     success = merge_result.get("success", False)
     error = merge_result.get("error", "")
     production_table_name = merge_result.get("production_table_name", "")
 
     metadata = task_param.get("task_run_metadata", {})
-    entity = metadata.get("var_name")
+    entity  = metadata.get("var_name")
     country = metadata.get("country_name")
-    tso = metadata.get("area_code")
-
-    # Extract business_date in YYYY-MM-DD format
-    business_date = execution_date.strftime("%Y-%m-%d") if execution_date else None
+    tso     = metadata.get("area_code")
 
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
 
-    if not success:
-        result = "fail"
-        message = error or f"Unknown error for {entity} on {business_date}"
+    if not success or not production_table_name:
+        result  = "fail"
+        reason  = "Missing production table name" if not production_table_name else error
+        message = reason or f"Unknown error for {entity} on {business_date}"
     else:
-    #try:
-        # Fully utilize the index: timestamp + variable + area_code
+        # licz po dacie i area_code (tabela jest per encja)
         sql = f'''
             SELECT COUNT(*) FROM airflow_data."{production_table_name}"
             WHERE "timestamp" >= %s::date
-                AND "timestamp" < (%s::date + interval '1 day')
-                AND area_code = %s
-                AND variable = %s;
+              AND "timestamp" < (%s::date + interval '1 day')
+              AND area_code = %s;
         '''
-        count = pg_hook.get_first(sql, parameters=(business_date, business_date, tso, entity))[0]
-
+        count = pg_hook.get_first(sql, parameters=(business_date, business_date, tso))[0]
         if count > 0:
             result = "success"
             message = f"Loaded {count} records to {production_table_name}"
         else:
             result = "fail"
             message = "No records found in production table"
-        # except Exception as e:
-        #     result = "fail"
-        #     message = f"Error checking production data: {str(e)}"
 
     log_sql = '''
     INSERT INTO airflow_data.entsoe_api_log (entity, country, tso, business_date, result, message)
@@ -328,21 +300,18 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str, execution_date
     ON CONFLICT (entity, country, tso, business_date)
     DO UPDATE SET result = EXCLUDED.result, message = EXCLUDED.message, logged_at = CURRENT_TIMESTAMP;
     '''
-
-    #try:
     pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
-    return {"success": True, "result": result, "message": message, "task_param": task_param}
-    # except Exception as e:
-    #     logger.error(f"[log_etl_result] Error logging to entsoe_api_log: {str(e)}")
-    #     return {"success": False, "error": str(e), "task_param": task_param, "message": message}
 
+    return {"success": True, "result": result, "message": message, "task_param": task_param}
 
 @task
-def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=None) -> list:
-    pg = PostgresHook(postgres_conn_id=db_conn_id)
-    date = execution_date.format("YYYY-MM-DD")
+def filter_entities_to_run(task_params: list, db_conn_id: str) -> list:
+    ctx = get_current_context()
+    di_start = ctx.get("data_interval_start")
+    date = di_start.in_timezone("Europe/Warsaw").to_date_string() if di_start else None
 
-    filtered_params = []
+    pg = PostgresHook(postgres_conn_id=db_conn_id)
+    filtered_params: List[Dict[str, Any]] = []
 
     for param in task_params:
         entity = param["task_run_metadata"]["var_name"]
@@ -350,9 +319,11 @@ def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=No
         tso = param["task_run_metadata"]["area_code"]
 
         result = pg.get_first("""
-            SELECT result, message FROM airflow_data.entsoe_api_log
+            SELECT result, message
+            FROM airflow_data.entsoe_api_log
             WHERE entity = %s AND country = %s AND tso = %s AND business_date = %s
-            ORDER BY logged_at DESC LIMIT 1;
+            ORDER BY logged_at DESC
+            LIMIT 1;
         """, parameters=(entity, country, tso, date))
 
         if not result:
@@ -360,7 +331,7 @@ def filter_entities_to_run(task_params: list, db_conn_id: str, execution_date=No
         else:
             status, message = result
             if status == "fail":
-                filtered_params.append(param)  # spróbujemy ponownie
+                filtered_params.append(param)  # ponawiamy
             else:
                 logging.info(f"Pomijam {entity} - {country} - {tso} na {date}, bo już pobrane: {message}")
 

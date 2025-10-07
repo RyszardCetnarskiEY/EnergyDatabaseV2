@@ -377,4 +377,4 @@ def pse_etl_main_expand():
     for task in [tables, fetched_data, staged, merged, cleanup, log_result]:
         task.set_upstream(log_table)
 
-dag = pse_etl_main_expand()
+#dag = pse_etl_main_expand()
