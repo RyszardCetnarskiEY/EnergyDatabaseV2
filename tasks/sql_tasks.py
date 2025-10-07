@@ -224,7 +224,6 @@ def _create_prod_table(variable_name):
     pg_hook.run(create_prod_sql)
     logger.info(f"Ensured production table airflow_data.\"{variable_name}\" exists.")
 
-
 @task
 def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id: str) -> Dict[str, Any]:
     pg_hook = PostgresHook(postgres_conn_id=db_conn_id)
@@ -255,7 +254,6 @@ def cleanup_staging_tables_batch(staging_dicts: List[Dict[str, Any]], db_conn_id
     #     return {"success": False, "error": str(e)}
 
     # finally:
-
 
 @task
 def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str) -> Dict[str, Any]:
@@ -305,7 +303,6 @@ def log_etl_result(merge_result: Dict[str, Any], db_conn_id: str) -> Dict[str, A
     pg_hook.run(log_sql, parameters=(entity, country, tso, business_date, result, message))
 
     return {"success": True, "result": result, "message": message, "task_param": task_param}
-
 
 @task
 def filter_entities_to_run(task_params: list, db_conn_id: str) -> list:

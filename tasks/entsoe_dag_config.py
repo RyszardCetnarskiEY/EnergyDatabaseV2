@@ -1,3 +1,14 @@
+"""
+ENTSOE_VARIABLES = {
+    "Actual Generation per Production Unit MAIN": {
+        "table": "actual_generation_per_production_unit_main",
+        "AreaType" : "bidding_zones",
+        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
+        "params" : {"documentType": "A73", "processType": "A16"}
+    }
+}"""
+
+
 ENTSOE_VARIABLES = {
     "Energy Prices Day Ahead Fixing I MAIN": {
         "table": "energy_prices_day_ahead_fixing_i_main",

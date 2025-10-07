@@ -56,7 +56,8 @@ def handle_actual_generation_per_production_unit(ts, var_name, ns):
     if not registered_resource: registered_resource = "no_res"
     if not ts_id: ts_id = "no_ts_id"
 
-    value_label = f"{var_name}__{registered_resource}__{ts_id}"
+    #value_label = f"{var_name}__{registered_resource}__{ts_id}"
+    value_label = f"{var_name}__{registered_resource}__{ts_id}__{name}"
     return value_label, name, registered_resource, ts_id
 
 def handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_code):
@@ -75,20 +76,25 @@ def handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_co
     value_label = f"{var_name}__{zone_type}"
     return value_label, ts_id, in_zone, out_zone
 
+def _minutes_from_iso_duration(res: str) -> int:
+    # wspieramy najczęstsze: PT15M, PT30M, PT60M
+    if not res or not res.startswith("PT") or not res.endswith("M"):
+        raise ValueError(f"Unsupported resolution: {res}")
+    return int(res[2:-1])
+
 @task(task_id='parse_xml')
-def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
+def parse_xml(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if not extracted_data.get("success", False):
-            #return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api"}
             return {**extracted_data, "success": False, "error": "Upstream failure in extract_from_api", "df": pd.DataFrame()}
 
-        xml_data = extracted_data['xml_content']
+        xml_data     = extracted_data['xml_content']
         country_name = extracted_data['country_name']
-        area_code = extracted_data['area_code']
-        var_name = extracted_data['var_name']
-        column_name = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['column_name']
-        var_resolution = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['resolution']
-        request_params_str = extracted_data['request_params']
+        area_code    = extracted_data['area_code']
+        var_name     = extracted_data['var_name']
+        column_name  = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['column_name']
+        var_res_cfg  = extracted_data['task_run_metadata']['config_dict']["xml_parsing_info"]['resolution']
+        req_params   = extracted_data['request_params']
 
         try:
             root = ET.fromstring(xml_data)
@@ -97,81 +103,133 @@ def parse_xml(extracted_data: Dict[str, Any]) -> pd.DataFrame:
 
         ns = {'ns': root.tag[root.tag.find("{")+1:root.tag.find("}")]} if "{" in root.tag else {}
 
-        # dorzuć area_code do listy kolumn bazowych (nie jest to konieczne, ale czytelniejsze)
-        results_df = pd.DataFrame(columns=[
-            "Position", "Period_Start", "Period_End",
-            "Resolution", "quantity", "variable", "area_code"
-        ])
-
+        # Czy w ogólnym XML gdziekolwiek występuje oczekiwana rozdzielczość?
         resolutions = [elem.text for elem in root.findall('.//ns:resolution', namespaces=ns)]
-        found_res = var_resolution in resolutions
+        found_cfg_res_anywhere = (var_res_cfg in resolutions)
+
+        parts: List[pd.DataFrame] = []
 
         for ts in root.findall('ns:TimeSeries', ns):
+            # --- nazwa z XML (może być None) ---
             name = ts.findtext(column_name, namespaces=ns)
+            if name:
+                name = name.strip()
+            else:
+                name = ""
 
+            value_label = f"{var_name}__{area_code}"
+
+            # Specjalne przypadki – mogą nadpisać label
             if var_name == "Actual Generation per Production Unit MAIN":
-                value_label, name, registered_resource, ts_id = handle_actual_generation_per_production_unit(ts, var_name, ns)
-
-            if var_name == "Generation Forecasts Day Ahead MAIN":
-                value_label, ts_id, in_zone, out_zone = handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_code)
-
-            if not name:
-                logger.warning(f"No mRID found for TimeSeries in {var_name} {country_name} ({area_code}) – skipping this block.")
-                continue
-            name = name.strip()
+                try:
+                    value_label, name, registered_resource, ts_id = handle_actual_generation_per_production_unit(ts, var_name, ns)
+                except Exception:
+                    # w razie czego zachowaj fallback ustawiony wyżej
+                    pass
+            elif var_name == "Generation Forecasts Day Ahead MAIN":
+                try:
+                    value_label, ts_id, in_zone, out_zone = handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_code)
+                except Exception:
+                    pass
+            else:
+                # Dla zwykłych przypadków – jeśli masz sensowną nazwę i kolumna nie jest mRID
+                if column_name != 'ns:mRID' and name:
+                    value_label = f"{name}__{area_code}"
 
             period = ts.find('ns:Period', ns)
             if period is None:
-                logger.error(f"No  data for {var_name} {country_name} {request_params_str}")
+                logger.error(f"No data for {var_name} {country_name} {req_params}")
                 continue
 
-            resolution = period.findtext('.//ns:resolution', namespaces=ns)
-            if resolution != var_resolution:
-                if found_res:
+            # Uzgodnienie rozdzielczości – trzymaj się configu, jeśli występuje w XML
+            res_xml = period.findtext('.//ns:resolution', namespaces=ns) or var_res_cfg
+            if res_xml != var_res_cfg:
+                if found_cfg_res_anywhere:
+                    # w XML w ogóle istnieje oczekiwana rozdzielczość – pomiń inne
                     continue
                 else:
-                    logger.warning(f"Resolution mismatch for {var_name} {country_name} ({area_code}). Using XML resolution '{resolution}' instead of config '{var_resolution}'")
-                    var_resolution = resolution
+                    # nie ma oczekiwanej – jedziemy na tej z XML
+                    logger.warning(
+                        f"Resolution mismatch for {var_name} {country_name} ({area_code}). "
+                        f"Using XML resolution '{res_xml}' instead of config '{var_res_cfg}'"
+                    )
+                    var_res_cfg = res_xml
 
-
-            timeInterval = period.findall('ns:timeInterval', ns)
             start = period.findtext('ns:timeInterval/ns:start', namespaces=ns)
-            end = period.findtext('ns:timeInterval/ns:end', namespaces=ns)
+            end   = period.findtext('ns:timeInterval/ns:end', namespaces=ns)
 
-            data = {}
+            # Zbierz punkty: pozycje 1-based z XML, wartości liczbowe lub NaN
+            pos1_list: List[int] = []
+            data0: Dict[int, float] = {}
+
             for point in period.findall('ns:Point', ns):
-                pos = point.findtext('ns:position', namespaces=ns)
-                qty = point.findtext('ns:quantity', namespaces=ns) or point.findtext('ns:price.amount', namespaces=ns)
-                if pos is not None and qty is not None:
-                    try:
-                        pos = int(pos)
-                        qty = float(qty)
-                        data[pos] = qty
-                        max_pos = max(0, pos)
-                    except ValueError:
-                        continue
+                pos_txt = point.findtext('ns:position', namespaces=ns)
+                qty_txt = point.findtext('ns:quantity', namespaces=ns) or point.findtext('ns:price.amount', namespaces=ns)
+                if pos_txt is None:
+                    continue
+                try:
+                    pos1 = int(pos_txt)
+                    pos0 = pos1 - 1     
+                except Exception:
+                    continue
+                pos1_list.append(pos1)
+                try:
+                    qty = float(qty_txt) if qty_txt is not None else float("nan")
+                except Exception:
+                    qty = float("nan")
+                data0[pos0] = qty
 
-            
-            if var_name != "Actual Generation per Production Unit MAIN" and var_name != "Generation Forecasts Day Ahead MAIN":
-                if column_name == 'ns:mRID':
-                    value_label = f"{var_name}__{area_code}"
-                else:
-                    value_label = f"{name}__{area_code}"
+            if not pos1_list:
+                continue
 
+            expected_points = max(pos1_list)
 
-            partial_df = pd.DataFrame.from_dict(data, orient='index', columns=["quantity"])
-            partial_df.loc[:, "Period_Start"] = start
-            partial_df.loc[:, "Period_End"] = end
-            partial_df.loc[:, "Resolution"] = resolution
-            partial_df.loc[:, "variable"] = value_label
-            partial_df.loc[:, "area_code"] = area_code
-            results_df = pd.concat([results_df, partial_df.reset_index(drop=False, names = 'Position' )], axis=0)
+            partial_df = pd.DataFrame.from_dict(data0, orient='index', columns=["quantity"])
 
-        if results_df.empty:
+            full_index = pd.RangeIndex(expected_points)
+            partial_df = partial_df.reindex(full_index)
+
+            partial_df["Position"]     = partial_df.index.astype("int64") + 1
+            partial_df["Period_Start"] = start
+            partial_df["Period_End"]   = end
+            partial_df["Resolution"]   = var_res_cfg
+            partial_df["variable"]     = value_label
+            partial_df["area_code"]    = area_code
+
+            # kolejność kolumn jak w testach
+            partial_df = partial_df[["Position","Period_Start","Period_End","Resolution","quantity","variable","area_code"]]
+
+            parts.append(partial_df)
+
+        if not parts:
             return {**extracted_data, "success": False, "error": "No data extracted", "df": pd.DataFrame()}
 
-        out = {**extracted_data, "success": True, "df": results_df}
-        return out
+        # ważne: bez ignore_index – powtarzający się indeks 0..N-1 per Period
+        results_df = pd.concat(parts, ignore_index=False)
+        results_df["Position"] = results_df["Position"].astype("int64")
+
+        if results_df["quantity"].isna().any():
+            grp = ["Period_Start", "Period_End", "Resolution", "variable", "area_code"]
+
+            # 1) Usuń NaN-y
+            results_df = results_df[results_df["quantity"].notna()].copy()
+
+            # 2) Stabilna kolejność: po grupie i oryginalnym Position
+            results_df = results_df.sort_values(grp + ["Position"])
+
+            # 3) NIE zmieniamy values w kolumnie Position!
+            results_df["Position"] = results_df["Position"].astype("int64")
+
+            # 4) Odbuduj indeks 0..K-1 per okres, ale bez tykania Position
+            new_index = results_df.groupby(grp).cumcount()
+            results_df = results_df.set_index(new_index)
+            results_df.index.name = None
+
+            # 5) Kolejność kolumn jak w testach
+            results_df = results_df[["Position","Period_Start","Period_End","Resolution","quantity","variable","area_code"]]
+
+        return {**extracted_data, "success": True, "df": results_df}
+
     except Exception as e:
         logger.exception("[parse_xml] error")
         return {**extracted_data, "success": False, "error": str(e), "df": pd.DataFrame()}
