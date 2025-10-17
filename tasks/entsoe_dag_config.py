@@ -1,15 +1,14 @@
-"""
 ENTSOE_VARIABLES = {
-    "Actual Generation per Production Unit MAIN": {
-        "table": "actual_generation_per_production_unit_main",
+    "Actual Generation per Production Type MAIN": {
+        "table": "actual_generation_per_production_type_main",
         "AreaType" : "bidding_zones",
-        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:PowerSystemResources/ns:name",  "resolution" :'PT60M'},
-        "params" : {"documentType": "A73", "processType": "A16"}
+        'xml_parsing_info' : {"column_name" : "ns:MktPSRType/ns:psrType",  "resolution" :'PT15M'},
+        "params" : {"documentType": "A75", "processType": "A16"}
     }
-}"""
+}
 
 
-ENTSOE_VARIABLES = {
+"""ENTSOE_VARIABLES = {
     "Energy Prices Day Ahead Fixing I MAIN": {
         "table": "energy_prices_day_ahead_fixing_i_main",
         "AreaType" : "country_domain",
@@ -51,7 +50,7 @@ ENTSOE_VARIABLES = {
         'xml_parsing_info' : {"column_name" : 'ns:mRID', "resolution" :'PT60M'},
         "params" : {"documentType": "A71", "processType": "A01"}
     }
-}
+}"""
 
 POSTGRES_CONN_ID = "postgres_azure_vm"
 RAW_XML_TABLE_NAME = "entsoe_raw_xml_landing"

@@ -60,6 +60,14 @@ def handle_actual_generation_per_production_unit(ts, var_name, ns):
     value_label = f"{var_name}__{registered_resource}__{ts_id}__{name}"
     return value_label, name, registered_resource, ts_id
 
+def handle_actual_generation_per_production_type(ts, area_code, ns):
+    psr = ts.findtext('ns:MktPSRType/ns:psrType', namespaces=ns) or "UNKNOWN"
+    ts_mrid = ts.findtext('ns:mRID', namespaces=ns) or "NO_MRID"
+
+    # Opcjonalny czytelny prefiks "A75_"
+    value_label = f"A75_{psr}__{ts_mrid}__{area_code}"
+    return value_label, psr, ts_mrid
+
 def handle_generation_forecasts_day_ahead(ts, var_name, ns, column_name, area_code):
     # Obsługuje przypadek "Generation Forecasts Day Ahead MAIN"
     ts_id = ts.findtext('ns:mRID', namespaces=ns)
@@ -120,7 +128,12 @@ def parse_xml(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
             value_label = f"{var_name}__{area_code}"
 
             # Specjalne przypadki – mogą nadpisać label
-            if var_name == "Actual Generation per Production Unit MAIN":
+            if var_name == "Actual Generation per Production Type MAIN":
+                try:
+                    value_label, psr, ts_mrid = handle_actual_generation_per_production_type(ts, area_code, ns)
+                except Exception:
+                    pass
+            elif var_name == "Actual Generation per Production Unit MAIN":
                 try:
                     value_label, name, registered_resource, ts_id = handle_actual_generation_per_production_unit(ts, var_name, ns)
                 except Exception:
