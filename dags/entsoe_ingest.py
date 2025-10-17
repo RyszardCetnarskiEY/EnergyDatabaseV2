@@ -31,7 +31,7 @@ from tasks.xml_processing_tasks import store_raw_xml, parse_xml
 
 
 #HISTORICAL_START_DATE = datetime(2025, 1, 1, tz="UTC") Do PYTEST
-HISTORICAL_START_DATE = datetime(2022, 1, 1, tz="UTC")
+HISTORICAL_START_DATE = datetime(2020, 1, 1, tz="UTC")
 
 default_args = {
     "owner": "airflow",
@@ -67,7 +67,7 @@ def zip_df_and_params(dfs: list, task_params: list) -> list[dict]:
 print('TODO - move to taskGroup one day and share some tasks for other variables, like generating units operation points')
 
 @dag(
-    dag_id='entsoe_dynamic_etl_pipeline_final_test_all',
+    dag_id='entsoe_dynamic_etl_pipeline_final_test_all_4',
     default_args=default_args,
     description='Daily ETL for ENTSO-E day-ahead prices for multiple countries since 2023-01-01.',
     schedule='@daily',
@@ -79,7 +79,7 @@ print('TODO - move to taskGroup one day and share some tasks for other variables
     doc_md=__doc__,
 
 )
-def entsoe_dynamic_etl_pipeline_test_all():
+def entsoe_dynamic_etl_pipeline_test_all_4():
 
     log_table_created = create_log_table()
 
@@ -229,4 +229,4 @@ def entsoe_dynamic_etl_pipeline_test_all():
     log_result.set_upstream(merged_results)
 
 
-entsoe_test_etl_dag = entsoe_dynamic_etl_pipeline_test_all()
+entsoe_test_etl_dag = entsoe_dynamic_etl_pipeline_test_all_4()
